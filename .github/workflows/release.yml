@@ -3,10 +3,10 @@ name: Decompile and Release
 on:
   push:
     paths:
-      - 'alpha/*.jar'
-      - 'beta/*.jar'
-      - 'snapshots/*.jar'
-      - 'releases/*.jar'
+      - 'jars/alpha/*.jar'
+      - 'jars/beta/*.jar'
+      - 'jars/snapshots/*.jar'
+      - 'jars/releases/*.jar'
   workflow_dispatch:
     inputs:
       jar_folder:
@@ -41,22 +41,22 @@ jobs:
 
       - name: Ensure folders exist
         run: |
-          mkdir -p alpha beta snapshots releases
+          mkdir -p jars/alpha jars/beta jars/snapshots jars/releases
 
       - name: Detect JAR
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             FOLDER="${{ inputs.jar_folder }}"
             JAR_FILENAME="${{ inputs.jar_file }}"
-            CHANGED_JAR="$FOLDER/$JAR_FILENAME"
+            CHANGED_JAR="jars/$FOLDER/$JAR_FILENAME"
           else
-            CHANGED_JAR=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | grep -E '^(alpha|beta|snapshots|releases)/.*\.jar$' | head -n 1)
+            CHANGED_JAR=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | grep -E '^jars/(alpha|beta|snapshots|releases)/.*\.jar$' | head -n 1)
 
             if [ -z "$CHANGED_JAR" ]; then
-              CHANGED_JAR=$(find alpha beta snapshots releases -name "*.jar" -printf "%T@ %p\n" | sort -n | tail -1 | cut -d' ' -f2-)
+              CHANGED_JAR=$(find jars -name "*.jar" -printf "%T@ %p\n" | sort -n | tail -1 | cut -d' ' -f2-)
             fi
 
-            FOLDER=$(echo "$CHANGED_JAR" | cut -d'/' -f1)
+            FOLDER=$(echo "$CHANGED_JAR" | cut -d'/' -f2)
           fi
 
           JAR_NAME=$(basename "$CHANGED_JAR" .jar)
@@ -132,7 +132,7 @@ jobs:
             Decompiled source for `${{ env.JAR_NAME }}`
 
             - Type: ${{ env.RELEASE_LABEL }}
-            - Source JAR: `${{ env.JAR_TYPE }}/${{ env.JAR_NAME }}.jar`
+            - Source JAR: `jars/${{ env.JAR_TYPE }}/${{ env.JAR_NAME }}.jar`
           files: "${{ env.JAR_NAME }}-source.zip"
           draft: false
           prerelease: ${{ env.IS_PRERELEASE }}
