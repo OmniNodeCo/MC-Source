@@ -36,7 +36,7 @@ on:
         type: boolean
         default: false
       filename:
-        description: 'Custom filename (ignored if using original name)'
+        description: 'Name (e.g. 26.2 or 26.2.jar - .jar added automatically)'
         required: false
         type: string
         default: ''
@@ -66,8 +66,37 @@ jobs:
         run: |
           mkdir -p jars/alpha jars/beta jars/snapshots jars/releases
 
-      # ── DOWNLOAD MODE ──
+      # ── RESOLVE FILENAME ──
       - name: Resolve filename
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "${{ inputs.keep_original_name }}" = "true" ] && [ "${{ inputs.mode }}" = "Download from URL" ]; then
+            URL="${{ inputs.download_url }}"
+            RESOLVED=$(curl -sLI -o /dev/null -w '%{url_effective}' "$URL")
+            FILENAME=$(basename "$RESOLVED")
+
+            if [[ "$FILENAME" != *.jar ]]; then
+              FILENAME="download.jar"
+            fi
+          else
+            FILENAME="${{ inputs.filename }}"
+
+            if [ -z "$FILENAME" ]; then
+              echo "No filename provided"
+              exit 1
+            fi
+
+            # Auto add .jar if not present
+            if [[ "$FILENAME" != *.jar ]]; then
+              FILENAME="${FILENAME}.jar"
+            fi
+          fi
+
+          echo "FILENAME=$FILENAME" >> "$GITHUB_ENV"
+          echo "Using filename: $FILENAME"
+
+      # ── DOWNLOAD MODE ──
+      - name: Download JAR
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'Download from URL'
         run: |
           URL="${{ inputs.download_url }}"
@@ -77,31 +106,7 @@ jobs:
             exit 1
           fi
 
-          if [ "${{ inputs.keep_original_name }}" = "true" ]; then
-            # Follow redirects and grab the final filename
-            RESOLVED=$(curl -sLI -o /dev/null -w '%{url_effective}' "$URL")
-            FILENAME=$(basename "$RESOLVED")
-
-            # Fallback if filename has no extension
-            if [[ "$FILENAME" != *.jar ]]; then
-              FILENAME="download.jar"
-            fi
-          else
-            FILENAME="${{ inputs.filename }}"
-
-            if [ -z "$FILENAME" ]; then
-              echo "No filename provided and original name not selected"
-              exit 1
-            fi
-          fi
-
-          echo "FILENAME=$FILENAME" >> "$GITHUB_ENV"
-          echo "Using filename: $FILENAME"
-
-      - name: Download JAR
-        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'Download from URL'
-        run: |
-          wget -O "jars/${{ inputs.folder }}/${{ env.FILENAME }}" "${{ inputs.download_url }}"
+          wget -O "jars/${{ inputs.folder }}/${{ env.FILENAME }}" "$URL"
 
       - name: Verify download
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'Download from URL'
@@ -140,13 +145,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             FOLDER="${{ inputs.folder }}"
-
-            if [ "${{ inputs.mode }}" = "Download from URL" ]; then
-              JAR_FILENAME="${{ env.FILENAME }}"
-            else
-              JAR_FILENAME="${{ inputs.filename }}"
-            fi
-
+            JAR_FILENAME="${{ env.FILENAME }}"
             CHANGED_JAR="jars/$FOLDER/$JAR_FILENAME"
           else
             CHANGED_JAR=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | grep -E '^jars/(alpha|beta|snapshots|releases)/.*\.jar$' | head -n 1)
