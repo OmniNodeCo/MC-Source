@@ -3,8 +3,27 @@ name: Decompile and Release
 on:
   push:
     paths:
-      - 'jars/*.jar'  # Triggers only when a jar is added/updated in the jars folder
-  workflow_dispatch:  # Allows manual triggering
+      - 'rd/*.jar'
+      - 'alpha/*.jar'
+      - 'beta/*.jar'
+      - 'snapshots/*.jar'
+      - 'releases/*.jar'
+  workflow_dispatch:
+    inputs:
+      jar_folder:
+        description: 'Folder the JAR is in'
+        required: true
+        type: choice
+        options:
+          - rd
+          - alpha
+          - beta
+          - snapshots
+          - releases
+      jar_file:
+        description: 'JAR filename (e.g. rd-132211.jar)'
+        required: true
+        type: string
 
 jobs:
   build-release:
@@ -22,15 +41,73 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Process Jars
+      - name: Detect JAR
         run: |
-          # Find the most recently added jar in the jars/ folder
-          JAR_PATH=$(ls -t jars/*.jar | head -n 1)
-          JAR_NAME=$(basename "$JAR_PATH" .jar)
-          
-          echo "Processing $JAR_NAME..."
-          echo "VERSION_NAME=$JAR_NAME" >> $GITHUB_ENV
-          echo "JAR_FILE=$JAR_PATH" >> $GITHUB_ENV
+          # Check if triggered manually or by push
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # Manual trigger - use the inputs
+            FOLDER="${{ inputs.jar_folder }}"
+            JAR_FILENAME="${{ inputs.jar_file }}"
+            CHANGED_JAR="$FOLDER/$JAR_FILENAME"
+          else
+            # Push trigger - auto detect changed jar
+            CHANGED_JAR=$(git diff --name-only HEAD~1 HEAD | grep ".*\.jar" | head -n 1)
+            
+            if [ -z "$CHANGED_JAR" ]; then
+              CHANGED_JAR=$(find . -maxdepth 2 -name "*.jar" -printf "%T@ %p\n" | sort -n | tail -1 | awk '{print $2}')
+            fi
+            
+            FOLDER=$(echo "$CHANGED_JAR" | awk -F'/' '{print $1}' | sed 's/\.\///')
+          fi
+
+          JAR_NAME=$(basename "$CHANGED_JAR" .jar)
+
+          echo "Detected JAR: $CHANGED_JAR"
+          echo "Folder: $FOLDER"
+          echo "JAR Name: $JAR_NAME"
+
+          echo "JAR_FILE=$CHANGED_JAR" >> $GITHUB_ENV
+          echo "JAR_NAME=$JAR_NAME" >> $GITHUB_ENV
+          echo "JAR_TYPE=$FOLDER" >> $GITHUB_ENV
+
+      - name: Validate JAR exists
+        run: |
+          if [ ! -f "${{ env.JAR_FILE }}" ]; then
+            echo "❌ ERROR: JAR file not found at ${{ env.JAR_FILE }}"
+            echo "Make sure you have uploaded the JAR to the correct folder before running."
+            exit 1
+          else
+            echo "✅ JAR found at ${{ env.JAR_FILE }}"
+          fi
+
+      - name: Set Release Label
+        run: |
+          case "${{ env.JAR_TYPE }}" in
+            rd)
+              echo "RELEASE_LABEL=Pre-Classic" >> $GITHUB_ENV
+              echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+              ;;
+            alpha)
+              echo "RELEASE_LABEL=Alpha" >> $GITHUB_ENV
+              echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+              ;;
+            beta)
+              echo "RELEASE_LABEL=Beta" >> $GITHUB_ENV
+              echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+              ;;
+            snapshots)
+              echo "RELEASE_LABEL=Snapshot" >> $GITHUB_ENV
+              echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+              ;;
+            releases)
+              echo "RELEASE_LABEL=Release" >> $GITHUB_ENV
+              echo "IS_PRERELEASE=false" >> $GITHUB_ENV
+              ;;
+            *)
+              echo "RELEASE_LABEL=Unknown" >> $GITHUB_ENV
+              echo "IS_PRERELEASE=false" >> $GITHUB_ENV
+              ;;
+          esac
 
       - name: Download Decompiler
         run: |
@@ -39,22 +116,36 @@ jobs:
       - name: Decompile JAR
         run: |
           mkdir -p output_src
-          java -jar vineflower.jar -j=2 -e "${{ env.JAR_FILE }}" output_src/
+          java -jar vineflower.jar \
+            -j=2 \
+            -e \
+            -dgs=1 \
+            -asc=1 \
+            -ind="    " \
+            "${{ env.JAR_FILE }}" \
+            output_src/
 
       - name: Zip Source Code
         run: |
           cd output_src
-          zip -r "../${{ env.VERSION_NAME }}-source.zip" .
+          zip -r "../${{ env.JAR_NAME }}-source.zip" .
           cd ..
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: "release-${{ env.VERSION_NAME }}"
-          name: "Source Code: ${{ env.VERSION_NAME }}"
-          body: "Automated decompilation of ${{ env.VERSION_NAME }}.jar"
-          files: "${{ env.VERSION_NAME }}-source.zip"
+          tag_name: "${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
+          name: "[${{ env.RELEASE_LABEL }}] ${{ env.JAR_NAME }}"
+          body: |
+            ## ${{ env.RELEASE_LABEL }}: ${{ env.JAR_NAME }}
+            
+            - **Type:** ${{ env.RELEASE_LABEL }}
+            - **Source JAR:** `${{ env.JAR_TYPE }}/${{ env.JAR_NAME }}.jar`
+            - **Decompiler:** VineFlower (latest)
+            
+            Download the zip below to get the decompiled Java source code.
+          files: "${{ env.JAR_NAME }}-source.zip"
           draft: false
-          prerelease: false
+          prerelease: ${{ env.IS_PRERELEASE }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
