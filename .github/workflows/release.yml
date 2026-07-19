@@ -50,8 +50,10 @@ jobs:
             JAR_FILENAME="${{ inputs.jar_file }}"
             CHANGED_JAR="jars/$FOLDER/$JAR_FILENAME"
           else
+            # Detect which JAR was pushed
             CHANGED_JAR=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | grep -E '^jars/(alpha|beta|snapshots|releases)/.*\.jar$' | head -n 1)
 
+            # Fallback if diff is empty (e.g. first push)
             if [ -z "$CHANGED_JAR" ]; then
               CHANGED_JAR=$(find jars -name "*.jar" -printf "%T@ %p\n" | sort -n | tail -1 | cut -d' ' -f2-)
             fi
@@ -65,10 +67,6 @@ jobs:
           echo "JAR_NAME=$JAR_NAME" >> "$GITHUB_ENV"
           echo "JAR_TYPE=$FOLDER" >> "$GITHUB_ENV"
 
-          echo "Detected JAR: $CHANGED_JAR"
-          echo "JAR Name: $JAR_NAME"
-          echo "Folder: $FOLDER"
-
       - name: Validate JAR exists
         run: |
           if [ ! -f "${{ env.JAR_FILE }}" ]; then
@@ -79,26 +77,11 @@ jobs:
       - name: Set Release Label
         run: |
           case "${{ env.JAR_TYPE }}" in
-            alpha)
-              echo "RELEASE_LABEL=Alpha" >> "$GITHUB_ENV"
-              echo "IS_PRERELEASE=true" >> "$GITHUB_ENV"
-              ;;
-            beta)
-              echo "RELEASE_LABEL=Beta" >> "$GITHUB_ENV"
-              echo "IS_PRERELEASE=true" >> "$GITHUB_ENV"
-              ;;
-            snapshots)
-              echo "RELEASE_LABEL=Snapshot" >> "$GITHUB_ENV"
-              echo "IS_PRERELEASE=true" >> "$GITHUB_ENV"
-              ;;
-            releases)
-              echo "RELEASE_LABEL=Release" >> "$GITHUB_ENV"
-              echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
-              ;;
-            *)
-              echo "RELEASE_LABEL=Unknown" >> "$GITHUB_ENV"
-              echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
-              ;;
+            alpha)     echo "RELEASE_LABEL=Alpha" >> "$GITHUB_ENV" ;;
+            beta)      echo "RELEASE_LABEL=Beta" >> "$GITHUB_ENV" ;;
+            snapshots) echo "RELEASE_LABEL=Snapshot" >> "$GITHUB_ENV" ;;
+            releases)  echo "RELEASE_LABEL=Release" >> "$GITHUB_ENV" ;;
+            *)         echo "RELEASE_LABEL=Minecraft" >> "$GITHUB_ENV" ;;
           esac
 
       - name: Download Vineflower
@@ -131,10 +114,12 @@ jobs:
           tag_name: "${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
           name: "[${{ env.RELEASE_LABEL }}] ${{ env.JAR_NAME }}"
           body: |
-            Decompiled source for `${{ env.JAR_NAME }}`
-
-            - Type: ${{ env.RELEASE_LABEL }}
-            - Source JAR: `jars/${{ env.JAR_TYPE }}/${{ env.JAR_NAME }}.jar`
+            Official Decompiled Source for Minecraft `${{ env.JAR_NAME }}`
+            
+            - **Classification:** ${{ env.RELEASE_LABEL }}
+            - **Original Path:** `jars/${{ env.JAR_TYPE }}/${{ env.JAR_NAME }}.jar`
           files: "${{ env.JAR_NAME }}-source.zip"
           draft: false
-          prerelease: ${{ env.IS_PRERELEASE }}
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
