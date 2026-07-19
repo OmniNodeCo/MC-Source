@@ -22,6 +22,11 @@ on:
         description: 'JAR filename (example: b1.7.3.jar)'
         required: true
         type: string
+      changelog_url:
+        description: 'Changelog URL (optional)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   build-release:
@@ -82,6 +87,15 @@ jobs:
             *)         echo "RELEASE_LABEL=Minecraft" >> "$GITHUB_ENV" ;;
           esac
 
+      - name: Set Changelog
+        run: |
+          CHANGELOG_URL="${{ inputs.changelog_url }}"
+          if [ -n "$CHANGELOG_URL" ]; then
+            echo "CHANGELOG_LINE=- **Changelog:** [View Changelog]($CHANGELOG_URL)" >> "$GITHUB_ENV"
+          else
+            echo "CHANGELOG_LINE=" >> "$GITHUB_ENV"
+          fi
+
       - name: Download Vineflower
         env:
           VINEFLOWER_VERSION: 1.12.0
@@ -127,6 +141,7 @@ jobs:
             ### Info
             - **Classification:** ${{ env.RELEASE_LABEL }}
             - **Decompiler:** Vineflower
+            ${{ env.CHANGELOG_LINE }}
           files: |
             ${{ env.JAR_NAME }}-source.zip
             ${{ env.JAR_NAME }}.jar
