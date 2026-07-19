@@ -1,0 +1,60 @@
+name: Decompile and Release
+
+on:
+  push:
+    paths:
+      - 'jars/*.jar'  # Triggers only when a jar is added/updated in the jars folder
+  workflow_dispatch:  # Allows manual triggering
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Process Jars
+        run: |
+          # Find the most recently added jar in the jars/ folder
+          JAR_PATH=$(ls -t jars/*.jar | head -n 1)
+          JAR_NAME=$(basename "$JAR_PATH" .jar)
+          
+          echo "Processing $JAR_NAME..."
+          echo "VERSION_NAME=$JAR_NAME" >> $GITHUB_ENV
+          echo "JAR_FILE=$JAR_PATH" >> $GITHUB_ENV
+
+      - name: Download Decompiler
+        run: |
+          wget -O vineflower.jar "https://github.com/Vineflower/vineflower/releases/latest/download/vineflower.jar"
+
+      - name: Decompile JAR
+        run: |
+          mkdir -p output_src
+          java -jar vineflower.jar -j=2 -e "${{ env.JAR_FILE }}" output_src/
+
+      - name: Zip Source Code
+        run: |
+          cd output_src
+          zip -r "../${{ env.VERSION_NAME }}-source.zip" .
+          cd ..
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "release-${{ env.VERSION_NAME }}"
+          name: "Source Code: ${{ env.VERSION_NAME }}"
+          body: "Automated decompilation of ${{ env.VERSION_NAME }}.jar"
+          files: "${{ env.VERSION_NAME }}-source.zip"
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
