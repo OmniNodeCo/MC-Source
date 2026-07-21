@@ -86,7 +86,6 @@ jobs:
               exit 1
             fi
 
-            # Auto add .jar if not present
             if [[ "$FILENAME" != *.jar ]]; then
               FILENAME="${FILENAME}.jar"
             fi
@@ -209,6 +208,89 @@ jobs:
             "${{ env.JAR_FILE }}" \
             output_src/
 
+      # ── LANGUAGE STATS ──
+      - name: Analyze languages
+        run: |
+          echo "Scanning decompiled source..."
+
+          TOTAL=0
+          JAVA=0
+          KOTLIN=0
+          SCALA=0
+          JSON=0
+          XML=0
+          PROPERTIES=0
+          HTML=0
+          CSS=0
+          JS=0
+          GLSL=0
+          PNG=0
+          OGG=0
+          TXT=0
+          OTHER=0
+
+          while IFS= read -r -d '' file; do
+            TOTAL=$((TOTAL + 1))
+            case "${file##*.}" in
+              java)       JAVA=$((JAVA + 1)) ;;
+              kt)         KOTLIN=$((KOTLIN + 1)) ;;
+              scala)      SCALA=$((SCALA + 1)) ;;
+              json|mcmeta) JSON=$((JSON + 1)) ;;
+              xml)        XML=$((XML + 1)) ;;
+              properties) PROPERTIES=$((PROPERTIES + 1)) ;;
+              html|htm)   HTML=$((HTML + 1)) ;;
+              css)        CSS=$((CSS + 1)) ;;
+              js)         JS=$((JS + 1)) ;;
+              fsh|vsh|glsl) GLSL=$((GLSL + 1)) ;;
+              png)        PNG=$((PNG + 1)) ;;
+              ogg)        OGG=$((OGG + 1)) ;;
+              txt|md)     TXT=$((TXT + 1)) ;;
+              *)          OTHER=$((OTHER + 1)) ;;
+            esac
+          done < <(find output_src -type f -print0)
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "LANG_STATS=No files found" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          STATS=""
+
+          add_stat() {
+            local name=$1
+            local count=$2
+            if [ "$count" -gt 0 ]; then
+              local pct=$(awk "BEGIN {printf \"%.1f\", ($count/$TOTAL)*100}")
+              STATS="${STATS}| ${name} | ${count} | ${pct}% |\n"
+            fi
+          }
+
+          add_stat "Java" $JAVA
+          add_stat "Kotlin" $KOTLIN
+          add_stat "Scala" $SCALA
+          add_stat "JSON" $JSON
+          add_stat "XML" $XML
+          add_stat "Properties" $PROPERTIES
+          add_stat "HTML" $HTML
+          add_stat "CSS" $CSS
+          add_stat "JavaScript" $JS
+          add_stat "GLSL (Shaders)" $GLSL
+          add_stat "PNG (Images)" $PNG
+          add_stat "OGG (Audio)" $OGG
+          add_stat "Text" $TXT
+          add_stat "Other" $OTHER
+
+          {
+            echo "LANG_STATS<<EOF"
+            echo "| Language/Type | Files | Percentage |"
+            echo "|--------------|-------|------------|"
+            echo -e "$STATS"
+            echo ""
+            echo "**Total Files:** $TOTAL"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      # ── ZIP ──
       - name: Zip Source Code
         run: |
           cd output_src
@@ -233,6 +315,9 @@ jobs:
             |------|-------------|
             | `${{ env.JAR_NAME }}-source.zip` | Decompiled Java source code |
             | `${{ env.JAR_NAME }}.jar` | Original client JAR |
+
+            ### File Breakdown
+            ${{ env.LANG_STATS }}
 
             ### Info
             - **Classification:** ${{ env.RELEASE_LABEL }}
