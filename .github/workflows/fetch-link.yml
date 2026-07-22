@@ -1,0 +1,71 @@
+name: Fetch Version Link
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 1.21.3, b1.8.1, a1.2.6, 24w44a)'
+        required: true
+        type: string
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch version links
+        run: |
+          VERSION="${{ inputs.version }}"
+          
+          echo "🔍 Searching for version: $VERSION"
+          echo ""
+          
+          # Get the version manifest
+          MANIFEST=$(curl -s "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
+          
+          # Find the version URL
+          VERSION_URL=$(echo "$MANIFEST" | jq -r --arg v "$VERSION" '.versions[] | select(.id == $v) | .url')
+          
+          if [ -z "$VERSION_URL" ] || [ "$VERSION_URL" = "null" ]; then
+            echo "❌ Version '$VERSION' not found!"
+            echo ""
+            echo "Available versions (showing first 20):"
+            echo "$MANIFEST" | jq -r '.versions[0:20] | .[].id'
+            exit 1
+          fi
+          
+          # Get version details
+          VERSION_DATA=$(curl -s "$VERSION_URL")
+          
+          # Extract links
+          CLIENT=$(echo "$VERSION_DATA" | jq -r '.downloads.client.url // empty')
+          SERVER=$(echo "$VERSION_DATA" | jq -r '.downloads.server.url // empty')
+          CLIENT_MAPPINGS=$(echo "$VERSION_DATA" | jq -r '.downloads.client_mappings.url // empty')
+          SERVER_MAPPINGS=$(echo "$VERSION_DATA" | jq -r '.downloads.server_mappings.url // empty')
+          TYPE=$(echo "$VERSION_DATA" | jq -r '.type')
+          RELEASE_TIME=$(echo "$VERSION_DATA" | jq -r '.releaseTime')
+          
+          echo "✅ Found version: $VERSION"
+          echo ""
+          echo "═══════════════════════════════════════════"
+          echo "📋 COPY THIS TO links.md:"
+          echo "═══════════════════════════════════════════"
+          echo ""
+          echo "### $VERSION"
+          if [ -n "$CLIENT" ]; then
+            echo "- Client: $CLIENT"
+          fi
+          if [ -n "$SERVER" ]; then
+            echo "- Server: $SERVER"
+          fi
+          echo ""
+          echo "═══════════════════════════════════════════"
+          echo ""
+          echo "📊 Extra Info:"
+          echo "- Type: $TYPE"
+          echo "- Released: $RELEASE_TIME"
+          if [ -n "$CLIENT_MAPPINGS" ]; then
+            echo "- Client Mappings: $CLIENT_MAPPINGS"
+          fi
+          if [ -n "$SERVER_MAPPINGS" ]; then
+            echo "- Server Mappings: $SERVER_MAPPINGS"
+          fi
