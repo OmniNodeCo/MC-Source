@@ -13,17 +13,19 @@ on:
           - 'All snapshots'
           - 'All beta'
           - 'All alpha'
-          - 'Everything'
+          - 'Everything (all categories)'
       versions:
-        description: 'Versions (only for Custom mode, comma separated)'
+        description: 'Custom: Versions (comma separated)'
         required: false
         type: string
         default: ''
-      auto_add:
-        description: 'Automatically add to links.md?'
+      update_mode:
+        description: 'Update mode'
         required: true
-        type: boolean
-        default: true
+        type: choice
+        options:
+          - 'Replace file contents'
+          - 'Append to existing'
 
 jobs:
   fetch:
@@ -35,51 +37,90 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Fetch manifest and get versions
-        id: get_versions
+      - name: Create links folder
+        run: mkdir -p links
+
+      - name: Fetch manifest
         run: |
-          echo "🔍 Fetching manifest..."
-          MANIFEST=$(curl -s "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
-          
+          echo "🔍 Fetching Mojang version manifest..."
+          curl -s "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json" > manifest.json
+          echo "✅ Manifest downloaded"
+
+      - name: Determine versions to fetch
+        id: versions
+        run: |
           MODE="${{ inputs.mode }}"
           
           case "$MODE" in
             "All releases")
-              VERSIONS=$(echo "$MANIFEST" | jq -r '.versions[] | select(.type == "release") | .id' | tr '\n' ' ')
+              VERSIONS=$(jq -r '.versions[] | select(.type == "release") | .id' manifest.json | tr '\n' ' ')
+              CATEGORIES="releases"
               ;;
             "All snapshots")
-              VERSIONS=$(echo "$MANIFEST" | jq -r '.versions[] | select(.type == "snapshot") | .id' | tr '\n' ' ')
+              VERSIONS=$(jq -r '.versions[] | select(.type == "snapshot") | .id' manifest.json | tr '\n' ' ')
+              CATEGORIES="snapshots"
               ;;
             "All beta")
-              VERSIONS=$(echo "$MANIFEST" | jq -r '.versions[] | select(.type == "old_beta") | .id' | tr '\n' ' ')
+              VERSIONS=$(jq -r '.versions[] | select(.type == "old_beta") | .id' manifest.json | tr '\n' ' ')
+              CATEGORIES="beta"
               ;;
             "All alpha")
-              VERSIONS=$(echo "$MANIFEST" | jq -r '.versions[] | select(.type == "old_alpha") | .id' | tr '\n' ' ')
+              VERSIONS=$(jq -r '.versions[] | select(.type == "old_alpha") | .id' manifest.json | tr '\n' ' ')
+              CATEGORIES="alpha"
               ;;
-            "Everything")
-              VERSIONS=$(echo "$MANIFEST" | jq -r '.versions[].id' | tr '\n' ' ')
+            "Everything (all categories)")
+              VERSIONS=$(jq -r '.versions[].id' manifest.json | tr '\n' ' ')
+              CATEGORIES="releases snapshots beta alpha"
               ;;
             *)
               VERSIONS=$(echo "${{ inputs.versions }}" | tr ',' ' ' | tr -s ' ')
+              CATEGORIES="custom"
               ;;
           esac
           
-          echo "Found versions: $VERSIONS"
           echo "VERSIONS=$VERSIONS" >> "$GITHUB_ENV"
+          echo "CATEGORIES=$CATEGORIES" >> "$GITHUB_ENV"
           
-          # Save manifest for next step
-          echo "$MANIFEST" > manifest.json
+          COUNT=$(echo "$VERSIONS" | wc -w)
+          echo "📋 Found $COUNT versions to fetch"
+
+      - name: Initialize link files
+        run: |
+          UPDATE_MODE="${{ inputs.update_mode }}"
+          CATEGORIES="${{ env.CATEGORIES }}"
+          
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          init_file() {
+            local FILE="$1"
+            local TITLE="$2"
+            
+            if [ "$UPDATE_MODE" = "Replace file contents" ] || [ ! -f "$FILE" ]; then
+              echo "# Minecraft $TITLE Version Links" > "$FILE"
+              echo "" >> "$FILE"
+              echo "Last updated: $TIMESTAMP" >> "$FILE"
+              echo "" >> "$FILE"
+              echo "---" >> "$FILE"
+              echo "" >> "$FILE"
+            fi
+          }
+          
+          if [ "$CATEGORIES" = "custom" ]; then
+            init_file "links/links_custom.md" "Custom"
+          else
+            for CAT in $CATEGORIES; do
+              case "$CAT" in
+                releases)  init_file "links/links_releases.md" "Release" ;;
+                snapshots) init_file "links/links_snapshots.md" "Snapshot" ;;
+                beta)      init_file "links/links_beta.md" "Beta" ;;
+                alpha)     init_file "links/links_alpha.md" "Alpha" ;;
+              esac
+            done
+          fi
 
       - name: Fetch all version links
         run: |
-          MANIFEST=$(cat manifest.json)
           VERSIONS="${{ env.VERSIONS }}"
-          
-          # Store results for links.md
-          RELEASES_SECTION=""
-          SNAPSHOTS_SECTION=""
-          BETA_SECTION=""
-          ALPHA_SECTION=""
           
           TOTAL=$(echo "$VERSIONS" | wc -w)
           COUNT=0
@@ -94,128 +135,85 @@ jobs:
             COUNT=$((COUNT + 1))
             echo "[$COUNT/$TOTAL] 🔍 $VERSION"
             
-            # Find the version URL
-            VERSION_URL=$(echo "$MANIFEST" | jq -r --arg v "$VERSION" '.versions[] | select(.id == $v) | .url')
+            # Get version URL from manifest
+            VERSION_URL=$(jq -r --arg v "$VERSION" '.versions[] | select(.id == $v) | .url' manifest.json)
             
             if [ -z "$VERSION_URL" ] || [ "$VERSION_URL" = "null" ]; then
-              echo "         ❌ Not found!"
+              echo "         ❌ Not found in manifest"
               continue
             fi
             
-            # Get version details
+            # Fetch version data
             VERSION_DATA=$(curl -s "$VERSION_URL")
             
             CLIENT=$(echo "$VERSION_DATA" | jq -r '.downloads.client.url // empty')
             SERVER=$(echo "$VERSION_DATA" | jq -r '.downloads.server.url // empty')
             TYPE=$(echo "$VERSION_DATA" | jq -r '.type')
+            RELEASE_TIME=$(echo "$VERSION_DATA" | jq -r '.releaseTime' | cut -d'T' -f1)
             
-            echo "         ✅ $TYPE"
+            echo "         ✅ $TYPE ($RELEASE_TIME)"
             
-            # Build the entry
-            ENTRY="### $VERSION"
-            if [ -n "$CLIENT" ]; then
-              ENTRY="$ENTRY
-          - Client: $CLIENT"
-            fi
-            if [ -n "$SERVER" ]; then
-              ENTRY="$ENTRY
-          - Server: $SERVER"
-            fi
-            ENTRY="$ENTRY
-          "
-            
-            # Sort into correct section
+            # Determine which file to write to
             case "$TYPE" in
-              release)
-                RELEASES_SECTION="$RELEASES_SECTION
-          $ENTRY"
-                ;;
-              snapshot)
-                SNAPSHOTS_SECTION="$SNAPSHOTS_SECTION
-          $ENTRY"
-                ;;
-              old_beta)
-                BETA_SECTION="$BETA_SECTION
-          $ENTRY"
-                ;;
-              old_alpha)
-                ALPHA_SECTION="$ALPHA_SECTION
-          $ENTRY"
-                ;;
+              release)   FILE="links/links_releases.md" ;;
+              snapshot)  FILE="links/links_snapshots.md" ;;
+              old_beta)  FILE="links/links_beta.md" ;;
+              old_alpha) FILE="links/links_alpha.md" ;;
+              *)         FILE="links/links_custom.md" ;;
             esac
             
-            # Small delay to not hammer the API
-            sleep 0.1
+            # For custom mode, always use custom file
+            if [ "${{ env.CATEGORIES }}" = "custom" ]; then
+              FILE="links/links_custom.md"
+            fi
+            
+            # Write entry
+            {
+              echo "### $VERSION"
+              echo "- Released: $RELEASE_TIME"
+              if [ -n "$CLIENT" ]; then
+                echo "- Client: $CLIENT"
+              fi
+              if [ -n "$SERVER" ]; then
+                echo "- Server: $SERVER"
+              fi
+              echo ""
+            } >> "$FILE"
+            
+            # Small delay
+            sleep 0.05
           done
           
           echo ""
           echo "═══════════════════════════════════════════"
           echo "✅ DONE! Processed $COUNT versions"
           echo "═══════════════════════════════════════════"
-          
-          # Save for next step
-          {
-            echo "RELEASES<<EOF"
-            echo "$RELEASES_SECTION"
-            echo "EOF"
-            echo "SNAPSHOTS<<EOF"
-            echo "$SNAPSHOTS_SECTION"
-            echo "EOF"
-            echo "BETA<<EOF"
-            echo "$BETA_SECTION"
-            echo "EOF"
-            echo "ALPHA<<EOF"
-            echo "$ALPHA_SECTION"
-            echo "EOF"
-          } >> "$GITHUB_ENV"
 
-      - name: Update links.md
-        if: inputs.auto_add == true
+      - name: Show file stats
         run: |
-          FILE="links.md"
-          
-          # Create fresh file
-          echo "# Minecraft Version Links" > "$FILE"
-          echo "" >> "$FILE"
-          echo "Auto-generated list of all Minecraft versions with download links." >> "$FILE"
-          echo "" >> "$FILE"
-          
-          if [ -n "$RELEASES" ]; then
-            echo "## Releases" >> "$FILE"
-            echo "$RELEASES" >> "$FILE"
-          fi
-          
-          if [ -n "$SNAPSHOTS" ]; then
-            echo "## Snapshots" >> "$FILE"
-            echo "$SNAPSHOTS" >> "$FILE"
-          fi
-          
-          if [ -n "$BETA" ]; then
-            echo "## Beta" >> "$FILE"
-            echo "$BETA" >> "$FILE"
-          fi
-          
-          if [ -n "$ALPHA" ]; then
-            echo "## Alpha" >> "$FILE"
-            echo "$ALPHA" >> "$FILE"
-          fi
-          
           echo ""
-          echo "📄 links.md updated!"
-          wc -l "$FILE"
+          echo "📊 File Statistics:"
+          echo ""
+          
+          for FILE in links/links_*.md; do
+            if [ -f "$FILE" ]; then
+              LINES=$(wc -l < "$FILE")
+              VERSIONS=$(grep -c "^### " "$FILE" || true)
+              echo "  📄 $(basename $FILE): $VERSIONS versions ($LINES lines)"
+            fi
+          done
 
       - name: Commit changes
-        if: inputs.auto_add == true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
-          git add links.md
+          git add links/
           
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Update links.md - ${{ inputs.mode }}"
+            git commit -m "Update links - ${{ inputs.mode }}"
             git push
             echo "✅ Committed!"
           fi
