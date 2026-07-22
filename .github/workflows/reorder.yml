@@ -43,7 +43,8 @@ jobs:
 
           echo "📋 Fetching all releases..."
 
-          gh release list --limit 1000 --json tagName,name,body,assets,isDraft,isPrerelease > all_releases.json
+          # Only fetch supported fields
+          gh release list --limit 1000 --json tagName,name,isDraft,isPrerelease > all_releases.json
 
           if [ "$CATEGORY" != "all" ]; then
             jq --arg cat "$CATEGORY" '[.[] | select(.tagName | startswith($cat))]' all_releases.json > filtered_releases.json
@@ -63,7 +64,7 @@ jobs:
           echo "📥 Fetching Mojang version manifest..."
           curl -s "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json" > mojang_manifest.json
 
-          # Mojang manifest is already newest first — keep that order
+          # Mojang manifest is already newest first
           jq -r '.versions[].id' mojang_manifest.json > mojang_order.txt
 
           echo ""
@@ -116,45 +117,58 @@ jobs:
           echo "═══════════════════════════════════════════"
           echo ""
 
-          # ── STEP 1: Reverse the list ──
-          # GitHub shows newest-created on top
-          # So we need to CREATE oldest first, newest last
-          # That way newest ends up on top
+          # Reverse the list — oldest first so newest ends up on top
           tac ordered_tags.txt > reversed_tags.txt
 
           TOTAL=$(wc -l < reversed_tags.txt)
 
-          # ── STEP 2: Delete ALL releases first ──
+          # ── STEP 1: Fetch and save all release data ──
+          echo "📦 Saving release data..."
+          echo ""
+
+          while IFS= read -r TAG; do
+            echo "  📥 Saving: $TAG"
+
+            mkdir -p "data_${TAG}"
+
+            # Get release name from list
+            NAME=$(jq -r --arg t "$TAG" '.[] | select(.tagName == $t) | .name' filtered_releases.json)
+            echo "$NAME" > "data_${TAG}/name.txt"
+
+            # Fetch full release info including body
+            gh release view "$TAG" --json body,assets > "data_${TAG}/info.json" 2>/dev/null || echo '{"body":"","assets":[]}' > "data_${TAG}/info.json"
+
+            # Save body
+            jq -r '.body // ""' "data_${TAG}/info.json" > "data_${TAG}/body.txt"
+
+            # Download assets
+            ASSET_NAMES=$(jq -r '.assets[].name // empty' "data_${TAG}/info.json" 2>/dev/null)
+            for ASSET in $ASSET_NAMES; do
+              gh release download "$TAG" -p "$ASSET" -D "data_${TAG}" 2>/dev/null || true
+            done
+
+          done < reversed_tags.txt
+
+          echo ""
+          echo "✅ All release data saved"
+          echo ""
+
+          # ── STEP 2: Delete ALL releases ──
           echo "🗑️ Deleting all $TOTAL releases..."
           echo ""
 
           while IFS= read -r TAG; do
             echo "  🗑️ Deleting: $TAG"
-
-            # Download assets before deleting
-            mkdir -p "assets_${TAG}"
-            ASSET_NAMES=$(jq -r --arg t "$TAG" '.[] | select(.tagName == $t) | .assets[].name' filtered_releases.json 2>/dev/null)
-            for ASSET in $ASSET_NAMES; do
-              gh release download "$TAG" -p "$ASSET" -D "assets_${TAG}" 2>/dev/null || true
-            done
-
-            # Save release body
-            jq -r --arg t "$TAG" '.[] | select(.tagName == $t) | .body' filtered_releases.json > "body_${TAG}.txt" 2>/dev/null || true
-
-            # Save release name
-            jq -r --arg t "$TAG" '.[] | select(.tagName == $t) | .name' filtered_releases.json > "name_${TAG}.txt" 2>/dev/null || true
-
-            # Delete release and tag
             gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
           done < reversed_tags.txt
 
           echo ""
           echo "✅ All releases deleted"
-          echo ""
           sleep 5
 
-          # ── STEP 3: Recreate in reverse order (oldest first) ──
-          echo "🔄 Recreating releases (oldest first → newest last)..."
+          # ── STEP 3: Recreate in order (oldest first) ──
+          echo ""
+          echo "🔄 Recreating releases..."
           echo ""
 
           git config user.name "github-actions[bot]"
@@ -164,10 +178,10 @@ jobs:
           while IFS= read -r TAG; do
             COUNT=$((COUNT + 1))
 
-            NAME=$(cat "name_${TAG}.txt" 2>/dev/null || echo "$TAG")
-            BODY=$(cat "body_${TAG}.txt" 2>/dev/null || echo "Release: $TAG")
+            NAME=$(cat "data_${TAG}/name.txt" 2>/dev/null || echo "$TAG")
+            BODY=$(cat "data_${TAG}/body.txt" 2>/dev/null || echo "")
 
-            echo "[$COUNT/$TOTAL] ✅ Creating: $TAG → $NAME"
+            echo "[$COUNT/$TOTAL] ✅ Creating: $NAME"
 
             # Create empty commit for unique timestamp
             git commit --allow-empty -m "Release: $TAG"
@@ -177,13 +191,12 @@ jobs:
 
             # Build asset list
             ASSET_FILES=""
-            if [ -d "assets_${TAG}" ]; then
-              for F in assets_${TAG}/*; do
-                if [ -f "$F" ]; then
-                  ASSET_FILES="$ASSET_FILES $F"
-                fi
-              done
-            fi
+            for F in data_${TAG}/*; do
+              FNAME=$(basename "$F")
+              if [ -f "$F" ] && [ "$FNAME" != "name.txt" ] && [ "$FNAME" != "body.txt" ] && [ "$FNAME" != "info.json" ]; then
+                ASSET_FILES="$ASSET_FILES $F"
+              fi
+            done
 
             # Create release
             if [ -n "$ASSET_FILES" ]; then
@@ -198,7 +211,7 @@ jobs:
             fi
 
             # Cleanup
-            rm -rf "assets_${TAG}" "body_${TAG}.txt" "name_${TAG}.txt"
+            rm -rf "data_${TAG}"
 
             sleep 2
           done < reversed_tags.txt
@@ -207,7 +220,7 @@ jobs:
           echo "═══════════════════════════════════════════"
           echo "✅ DONE! $TOTAL releases recreated"
           echo ""
-          echo "Order on GitHub (top → bottom):"
+          echo "📋 Final order (top → bottom):"
           echo ""
 
           COUNT=0
@@ -216,4 +229,5 @@ jobs:
             echo "  $COUNT. $tag"
           done < ordered_tags.txt
 
+          echo ""
           echo "═══════════════════════════════════════════"
