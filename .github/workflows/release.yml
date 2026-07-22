@@ -71,11 +71,82 @@ on:
         default: 0
 
 # ════════════════════════════════════════════════
-# SINGLE: DOWNLOAD & RELEASE
+# SETUP: CREATE MANIFEST
 # ════════════════════════════════════════════════
 jobs:
+  setup:
+    name: "🔧 Setup Manifest"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create manifest if missing
+        run: |
+          MANIFEST="manifest.json"
+
+          if [ ! -f "$MANIFEST" ]; then
+            echo "📝 Creating manifest.json..."
+
+            cat > "$MANIFEST" << 'MANIFEST_EOF'
+          {
+            "project": "MC-Source",
+            "description": "Decompiled Minecraft Source Code",
+            "decompiler": "Vineflower 1.12.0",
+            "categories": [
+              "releases",
+              "snapshots",
+              "beta",
+              "alpha"
+            ],
+            "link_files": [
+              "links/links_releases.md",
+              "links/links_snapshots.md",
+              "links/links_beta.md",
+              "links/links_alpha.md",
+              "links/links_custom.md"
+            ],
+            "jar_types": [
+              "client",
+              "server"
+            ],
+            "processed": []
+          }
+          MANIFEST_EOF
+          else
+            echo "✅ manifest.json already exists"
+          fi
+
+      - name: Ensure all folders exist
+        run: |
+          mkdir -p jars/alpha jars/beta jars/snapshots jars/releases
+          mkdir -p links
+
+          # Create .gitkeep files to preserve empty folders
+          for DIR in jars/alpha jars/beta jars/snapshots jars/releases links; do
+            if [ ! "$(ls -A $DIR 2>/dev/null)" ]; then
+              touch "$DIR/.gitkeep"
+            fi
+          done
+
+      - name: Commit manifest and folders
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add manifest.json jars/ links/
+          git diff --cached --quiet || git commit -m "🔧 Setup: Create manifest and folders"
+          git push || true
+
+# ════════════════════════════════════════════════
+# SINGLE: DOWNLOAD & RELEASE
+# ════════════════════════════════════════════════
   single-download:
     name: "📥 Download & Release"
+    needs: setup
     if: ${{ inputs.mode == '📥 Download & Release (from URL)' }}
     runs-on: ubuntu-latest
     permissions:
@@ -84,6 +155,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Pull latest
+        run: git pull
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -102,10 +178,8 @@ jobs:
             exit 1
           fi
 
-      - name: Setup
+      - name: Setup variables
         run: |
-          mkdir -p jars/${{ inputs.single_folder }}
-
           VERSION=$(echo "${{ inputs.single_version }}" | sed 's/\.jar$//')
           TYPE="${{ inputs.single_jar_type }}"
           FOLDER="${{ inputs.single_folder }}"
@@ -117,27 +191,60 @@ jobs:
           echo "FILENAME=${VERSION}-${TYPE}.jar" >> "$GITHUB_ENV"
           echo "JAR_FILE=jars/${FOLDER}/${VERSION}-${TYPE}.jar" >> "$GITHUB_ENV"
 
-      - name: Download JAR
+      - name: Check if release exists
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          TAG="${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "⏭️ Release $TAG already exists"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download JAR
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          mkdir -p jars/${{ inputs.single_folder }}
           wget -O "${{ env.JAR_FILE }}" "${{ inputs.single_url }}"
 
           SIZE=$(stat -c%s "${{ env.JAR_FILE }}")
           echo "✅ Downloaded: ${{ env.JAR_FILE }} ($SIZE bytes)"
 
           if [ "$SIZE" -lt 1000 ]; then
-            echo "❌ File too small — probably not a valid JAR"
+            echo "❌ File too small"
             exit 1
           fi
 
       - name: Commit JAR to repo
+        if: steps.check.outputs.skip == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "${{ env.JAR_FILE }}"
-          git diff --cached --quiet || git commit -m "Add ${{ env.FILENAME }} to jars/${{ env.JAR_TYPE }}"
+          git diff --cached --quiet || git commit -m "Add ${{ env.FILENAME }}"
           git push || true
 
+      - name: Update manifest
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          MANIFEST="manifest.json"
+          ENTRY="${{ env.JAR_TYPE }}/${{ env.JAR_NAME }}"
+
+          if jq -e --arg e "$ENTRY" '.processed | index($e)' "$MANIFEST" > /dev/null 2>&1; then
+            echo "Already in manifest"
+          else
+            jq --arg e "$ENTRY" '.processed += [$e]' "$MANIFEST" > tmp.json && mv tmp.json "$MANIFEST"
+
+            git add "$MANIFEST"
+            git diff --cached --quiet || git commit -m "📋 Update manifest: $ENTRY"
+            git push || true
+          fi
+
       - name: Set labels
+        if: steps.check.outputs.skip == 'false'
         run: |
           case "${{ env.JAR_TYPE }}" in
             alpha)     LABEL="Alpha" ;;
@@ -156,14 +263,17 @@ jobs:
           fi
 
       - name: Download Vineflower
+        if: steps.check.outputs.skip == 'false'
         run: wget -O vineflower.jar "https://repo1.maven.org/maven2/org/vineflower/vineflower/1.12.0/vineflower-1.12.0.jar"
 
       - name: Decompile
+        if: steps.check.outputs.skip == 'false'
         run: |
           mkdir -p output_src
           java -jar vineflower.jar -j=2 -e=1 -dgs=1 -asc=1 -ind="    " "${{ env.JAR_FILE }}" output_src/
 
       - name: Analyze files
+        if: steps.check.outputs.skip == 'false'
         run: |
           TOTAL=$(find output_src -type f | wc -l)
           JAVA=$(find output_src -name "*.java" | wc -l)
@@ -191,11 +301,13 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Package
+        if: steps.check.outputs.skip == 'false'
         run: |
           cd output_src && zip -r "../${{ env.JAR_NAME }}-source.zip" . && cd ..
           cp "${{ env.JAR_FILE }}" "${{ env.JAR_NAME }}.jar"
 
       - name: Create Release
+        if: steps.check.outputs.skip == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
@@ -231,6 +343,7 @@ jobs:
 # ════════════════════════════════════════════════
   single-existing:
     name: "📂 Release Existing JAR"
+    needs: setup
     if: ${{ inputs.mode == '📂 Release Existing JAR (from repo)' }}
     runs-on: ubuntu-latest
     permissions:
@@ -239,6 +352,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Pull latest
+        run: git pull
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -253,7 +371,7 @@ jobs:
             exit 1
           fi
 
-      - name: Setup
+      - name: Setup variables
         run: |
           VERSION=$(echo "${{ inputs.single_version }}" | sed 's/\.jar$//')
           TYPE="${{ inputs.single_jar_type }}"
@@ -270,12 +388,27 @@ jobs:
           if [ ! -f "${{ env.JAR_FILE }}" ]; then
             echo "❌ JAR not found: ${{ env.JAR_FILE }}"
             echo ""
-            echo "Available JARs in jars/${{ env.JAR_TYPE }}/:"
-            ls jars/${{ env.JAR_TYPE }}/ 2>/dev/null || echo "  (empty)"
+            echo "Available JARs:"
+            find jars/ -name "*.jar" 2>/dev/null || echo "  None found"
             exit 1
+          fi
+          echo "✅ Found: ${{ env.JAR_FILE }}"
+
+      - name: Check if release exists
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "⏭️ Release $TAG already exists"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set labels
+        if: steps.check.outputs.skip == 'false'
         run: |
           case "${{ env.JAR_TYPE }}" in
             alpha)     LABEL="Alpha" ;;
@@ -293,15 +426,36 @@ jobs:
             echo "CHANGELOG=" >> "$GITHUB_ENV"
           fi
 
+      - name: Update manifest
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          MANIFEST="manifest.json"
+          ENTRY="${{ env.JAR_TYPE }}/${{ env.JAR_NAME }}"
+
+          if jq -e --arg e "$ENTRY" '.processed | index($e)' "$MANIFEST" > /dev/null 2>&1; then
+            echo "Already in manifest"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            jq --arg e "$ENTRY" '.processed += [$e]' "$MANIFEST" > tmp.json && mv tmp.json "$MANIFEST"
+            git add "$MANIFEST"
+            git diff --cached --quiet || git commit -m "📋 Update manifest: $ENTRY"
+            git push || true
+          fi
+
       - name: Download Vineflower
+        if: steps.check.outputs.skip == 'false'
         run: wget -O vineflower.jar "https://repo1.maven.org/maven2/org/vineflower/vineflower/1.12.0/vineflower-1.12.0.jar"
 
       - name: Decompile
+        if: steps.check.outputs.skip == 'false'
         run: |
           mkdir -p output_src
           java -jar vineflower.jar -j=2 -e=1 -dgs=1 -asc=1 -ind="    " "${{ env.JAR_FILE }}" output_src/
 
       - name: Analyze files
+        if: steps.check.outputs.skip == 'false'
         run: |
           TOTAL=$(find output_src -type f | wc -l)
           JAVA=$(find output_src -name "*.java" | wc -l)
@@ -329,11 +483,13 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Package
+        if: steps.check.outputs.skip == 'false'
         run: |
           cd output_src && zip -r "../${{ env.JAR_NAME }}-source.zip" . && cd ..
           cp "${{ env.JAR_FILE }}" "${{ env.JAR_NAME }}.jar"
 
       - name: Create Release
+        if: steps.check.outputs.skip == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
@@ -369,14 +525,21 @@ jobs:
 # ════════════════════════════════════════════════
   batch-parse:
     name: "📋 Parse Link File"
+    needs: setup
     if: ${{ inputs.mode == '📋 Batch Release (from link file)' }}
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.parse.outputs.matrix }}
+      count: ${{ steps.parse.outputs.count }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Pull latest
+        run: git pull
 
       - name: Parse link file
         id: parse
@@ -386,12 +549,13 @@ jobs:
           if [ ! -f "$FILE" ]; then
             echo "❌ File not found: $FILE"
             echo ""
-            echo "Available files:"
-            ls links/ 2>/dev/null || echo "  No links folder found"
+            echo "Available link files:"
+            ls links/*.md 2>/dev/null || echo "  None — run Fetch Version Links first"
             exit 1
           fi
 
-          # Determine section from filename
+          echo "📄 Reading: $FILE"
+
           case "${{ inputs.batch_file }}" in
             links_releases.md)  SECTION="releases" ;;
             links_snapshots.md) SECTION="snapshots" ;;
@@ -446,8 +610,16 @@ jobs:
 
           TOTAL=$(echo "$ENTRIES" | jq 'length')
           echo "📋 Found $TOTAL entries to process"
+          echo "$ENTRIES" | jq .
 
-          echo "matrix=$(echo "$ENTRIES" | jq -c '{"include": .}')" >> "$GITHUB_OUTPUT"
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "⚠️ No entries found — nothing to process"
+            echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix=$(echo "$ENTRIES" | jq -c '{"include": .}')" >> "$GITHUB_OUTPUT"
+            echo "count=$TOTAL" >> "$GITHUB_OUTPUT"
+          fi
 
 # ════════════════════════════════════════════════
 # BATCH: PROCESS EACH VERSION
@@ -455,7 +627,7 @@ jobs:
   batch-process:
     name: "⚙️ ${{ matrix.version }} (${{ matrix.type }})"
     needs: batch-parse
-    if: ${{ fromJson(needs.batch-parse.outputs.matrix).include[0] != null }}
+    if: ${{ needs.batch-parse.outputs.count != '0' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -467,6 +639,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Pull latest
+        run: git pull
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -474,7 +651,7 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Setup
+      - name: Setup variables
         run: |
           mkdir -p jars/${{ matrix.section }}
 
@@ -524,6 +701,23 @@ jobs:
           git add "${{ env.JAR_FILE }}"
           git diff --cached --quiet || git commit -m "Add ${{ env.FILENAME }}"
           git push || true
+
+      - name: Update manifest
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          git pull --rebase || true
+
+          MANIFEST="manifest.json"
+          ENTRY="${{ env.JAR_TYPE }}/${{ env.JAR_NAME }}"
+
+          if [ -f "$MANIFEST" ]; then
+            if ! jq -e --arg e "$ENTRY" '.processed | index($e)' "$MANIFEST" > /dev/null 2>&1; then
+              jq --arg e "$ENTRY" '.processed += [$e]' "$MANIFEST" > tmp.json && mv tmp.json "$MANIFEST"
+              git add "$MANIFEST"
+              git diff --cached --quiet || git commit -m "📋 Update manifest: $ENTRY"
+              git push || true
+            fi
+          fi
 
       - name: Download Vineflower
         if: steps.check.outputs.skip == 'false'
