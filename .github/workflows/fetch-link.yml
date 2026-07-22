@@ -3,10 +3,22 @@ name: Fetch Version Links
 on:
   workflow_dispatch:
     inputs:
-      versions:
-        description: 'Versions (comma or space separated, e.g. "1.21.3, 1.21.2, b1.8.1, a1.2.6")'
+      mode:
+        description: 'Mode'
         required: true
+        type: choice
+        options:
+          - 'Custom versions'
+          - 'All releases'
+          - 'All snapshots'
+          - 'All beta'
+          - 'All alpha'
+          - 'Everything'
+      versions:
+        description: 'Versions (only for Custom mode, comma separated)'
+        required: false
         type: string
+        default: ''
       auto_add:
         description: 'Automatically add to links.md?'
         required: true
@@ -23,37 +35,70 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Fetch all version links
+      - name: Fetch manifest and get versions
+        id: get_versions
         run: |
-          # Clean input - replace commas with spaces, remove extra spaces
-          INPUT="${{ inputs.versions }}"
-          VERSIONS=$(echo "$INPUT" | tr ',' ' ' | tr -s ' ')
-          
           echo "🔍 Fetching manifest..."
           MANIFEST=$(curl -s "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
+          
+          MODE="${{ inputs.mode }}"
+          
+          case "$MODE" in
+            "All releases")
+              VERSIONS=$(echo "$MANIFEST" | jq -r '.versions[] | select(.type == "release") | .id' | tr '\n' ' ')
+              ;;
+            "All snapshots")
+              VERSIONS=$(echo "$MANIFEST" | jq -r '.versions[] | select(.type == "snapshot") | .id' | tr '\n' ' ')
+              ;;
+            "All beta")
+              VERSIONS=$(echo "$MANIFEST" | jq -r '.versions[] | select(.type == "old_beta") | .id' | tr '\n' ' ')
+              ;;
+            "All alpha")
+              VERSIONS=$(echo "$MANIFEST" | jq -r '.versions[] | select(.type == "old_alpha") | .id' | tr '\n' ' ')
+              ;;
+            "Everything")
+              VERSIONS=$(echo "$MANIFEST" | jq -r '.versions[].id' | tr '\n' ' ')
+              ;;
+            *)
+              VERSIONS=$(echo "${{ inputs.versions }}" | tr ',' ' ' | tr -s ' ')
+              ;;
+          esac
+          
+          echo "Found versions: $VERSIONS"
+          echo "VERSIONS=$VERSIONS" >> "$GITHUB_ENV"
+          
+          # Save manifest for next step
+          echo "$MANIFEST" > manifest.json
+
+      - name: Fetch all version links
+        run: |
+          MANIFEST=$(cat manifest.json)
+          VERSIONS="${{ env.VERSIONS }}"
           
           # Store results for links.md
           RELEASES_SECTION=""
           SNAPSHOTS_SECTION=""
           BETA_SECTION=""
           ALPHA_SECTION=""
-          OTHER_SECTION=""
+          
+          TOTAL=$(echo "$VERSIONS" | wc -w)
+          COUNT=0
           
           echo ""
           echo "═══════════════════════════════════════════"
-          echo "📋 RESULTS"
+          echo "📋 FETCHING $TOTAL VERSIONS"
           echo "═══════════════════════════════════════════"
           echo ""
           
           for VERSION in $VERSIONS; do
-            echo "🔍 Looking up: $VERSION"
+            COUNT=$((COUNT + 1))
+            echo "[$COUNT/$TOTAL] 🔍 $VERSION"
             
             # Find the version URL
             VERSION_URL=$(echo "$MANIFEST" | jq -r --arg v "$VERSION" '.versions[] | select(.id == $v) | .url')
             
             if [ -z "$VERSION_URL" ] || [ "$VERSION_URL" = "null" ]; then
-              echo "   ❌ Not found!"
-              echo ""
+              echo "         ❌ Not found!"
               continue
             fi
             
@@ -64,7 +109,7 @@ jobs:
             SERVER=$(echo "$VERSION_DATA" | jq -r '.downloads.server.url // empty')
             TYPE=$(echo "$VERSION_DATA" | jq -r '.type')
             
-            echo "   ✅ Found! Type: $TYPE"
+            echo "         ✅ $TYPE"
             
             # Build the entry
             ENTRY="### $VERSION"
@@ -97,45 +142,16 @@ jobs:
                 ALPHA_SECTION="$ALPHA_SECTION
           $ENTRY"
                 ;;
-              *)
-                OTHER_SECTION="$OTHER_SECTION
-          $ENTRY"
-                ;;
             esac
             
-            echo ""
+            # Small delay to not hammer the API
+            sleep 0.1
           done
           
-          # Print everything
-          echo "═══════════════════════════════════════════"
-          echo "📋 COPY THIS TO links.md:"
-          echo "═══════════════════════════════════════════"
           echo ""
-          
-          if [ -n "$RELEASES_SECTION" ]; then
-            echo "## Releases"
-            echo "$RELEASES_SECTION"
-          fi
-          
-          if [ -n "$SNAPSHOTS_SECTION" ]; then
-            echo "## Snapshots"
-            echo "$SNAPSHOTS_SECTION"
-          fi
-          
-          if [ -n "$BETA_SECTION" ]; then
-            echo "## Beta"
-            echo "$BETA_SECTION"
-          fi
-          
-          if [ -n "$ALPHA_SECTION" ]; then
-            echo "## Alpha"
-            echo "$ALPHA_SECTION"
-          fi
-          
-          if [ -n "$OTHER_SECTION" ]; then
-            echo "## Other"
-            echo "$OTHER_SECTION"
-          fi
+          echo "═══════════════════════════════════════════"
+          echo "✅ DONE! Processed $COUNT versions"
+          echo "═══════════════════════════════════════════"
           
           # Save for next step
           {
@@ -153,61 +169,40 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_ENV"
 
-      - name: Add to links.md
+      - name: Update links.md
         if: inputs.auto_add == true
         run: |
           FILE="links.md"
           
-          # Create file if not exists
-          if [ ! -f "$FILE" ]; then
-            echo "# Minecraft Version Links" > "$FILE"
-            echo "" >> "$FILE"
+          # Create fresh file
+          echo "# Minecraft Version Links" > "$FILE"
+          echo "" >> "$FILE"
+          echo "Auto-generated list of all Minecraft versions with download links." >> "$FILE"
+          echo "" >> "$FILE"
+          
+          if [ -n "$RELEASES" ]; then
+            echo "## Releases" >> "$FILE"
+            echo "$RELEASES" >> "$FILE"
           fi
           
-          # Function to add entries to a section
-          add_to_section() {
-            local SECTION_NAME="$1"
-            local ENTRIES="$2"
-            
-            if [ -z "$ENTRIES" ]; then
-              return
-            fi
-            
-            # Check if section exists
-            if grep -q "^## $SECTION_NAME" "$FILE"; then
-              # Find line number of section
-              LINE_NUM=$(grep -n "^## $SECTION_NAME" "$FILE" | cut -d: -f1)
-              
-              # Find next section or end of file
-              NEXT_SECTION=$(tail -n +$((LINE_NUM + 1)) "$FILE" | grep -n "^## " | head -1 | cut -d: -f1)
-              
-              if [ -n "$NEXT_SECTION" ]; then
-                INSERT_LINE=$((LINE_NUM + NEXT_SECTION - 1))
-              else
-                INSERT_LINE=$(wc -l < "$FILE")
-              fi
-              
-              # Insert entries
-              head -n "$INSERT_LINE" "$FILE" > temp.md
-              echo "$ENTRIES" >> temp.md
-              tail -n +$((INSERT_LINE + 1)) "$FILE" >> temp.md
-              mv temp.md "$FILE"
-            else
-              # Add new section at end
-              echo "" >> "$FILE"
-              echo "## $SECTION_NAME" >> "$FILE"
-              echo "$ENTRIES" >> "$FILE"
-            fi
-          }
+          if [ -n "$SNAPSHOTS" ]; then
+            echo "## Snapshots" >> "$FILE"
+            echo "$SNAPSHOTS" >> "$FILE"
+          fi
           
-          add_to_section "Releases" "$RELEASES"
-          add_to_section "Snapshots" "$SNAPSHOTS"
-          add_to_section "Beta" "$BETA"
-          add_to_section "Alpha" "$ALPHA"
+          if [ -n "$BETA" ]; then
+            echo "## Beta" >> "$FILE"
+            echo "$BETA" >> "$FILE"
+          fi
           
-          echo "📄 Updated links.md:"
+          if [ -n "$ALPHA" ]; then
+            echo "## Alpha" >> "$FILE"
+            echo "$ALPHA" >> "$FILE"
+          fi
+          
           echo ""
-          cat "$FILE"
+          echo "📄 links.md updated!"
+          wc -l "$FILE"
 
       - name: Commit changes
         if: inputs.auto_add == true
@@ -220,7 +215,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Add versions: ${{ inputs.versions }}"
+            git commit -m "Update links.md - ${{ inputs.mode }}"
             git push
-            echo "✅ Committed to links.md"
+            echo "✅ Committed!"
           fi
