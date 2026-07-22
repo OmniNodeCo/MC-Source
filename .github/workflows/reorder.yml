@@ -1,0 +1,219 @@
+name: 🔄 Reorder Releases (Newest → Oldest)
+
+on:
+  workflow_dispatch:
+    inputs:
+      category:
+        description: '📁 Which category to reorder?'
+        required: true
+        type: choice
+        options:
+          - all
+          - releases
+          - snapshots
+          - beta
+          - alpha
+      dry_run:
+        description: '🧪 Dry run (just show order, dont change anything)?'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  reorder:
+    name: "🔄 Reorder Releases"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Pull latest
+        run: git pull
+
+      - name: Get all releases and sort
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CATEGORY="${{ inputs.category }}"
+
+          echo "📋 Fetching all releases..."
+
+          gh release list --limit 1000 --json tagName,name,body,assets,isDraft,isPrerelease > all_releases.json
+
+          if [ "$CATEGORY" != "all" ]; then
+            jq --arg cat "$CATEGORY" '[.[] | select(.tagName | startswith($cat))]' all_releases.json > filtered_releases.json
+          else
+            cp all_releases.json filtered_releases.json
+          fi
+
+          TOTAL=$(jq 'length' filtered_releases.json)
+          echo "Found $TOTAL releases to reorder"
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "❌ No releases found for category: $CATEGORY"
+            exit 0
+          fi
+
+          # Get Mojang manifest for proper ordering
+          echo "📥 Fetching Mojang version manifest..."
+          curl -s "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json" > mojang_manifest.json
+
+          # Mojang manifest is already newest first — keep that order
+          jq -r '.versions[].id' mojang_manifest.json > mojang_order.txt
+
+          echo ""
+          echo "═══════════════════════════════════════════"
+          echo "📋 RELEASE ORDER (newest → oldest)"
+          echo "═══════════════════════════════════════════"
+          echo ""
+
+          # Create ordered release list — newest first
+          > ordered_tags.txt
+
+          while IFS= read -r mc_version; do
+            for type in client server; do
+              for section in releases snapshots beta alpha; do
+                TAG="${section}-${mc_version}-${type}"
+                if jq -e --arg t "$TAG" '.[] | select(.tagName == $t)' filtered_releases.json > /dev/null 2>&1; then
+                  echo "$TAG" >> ordered_tags.txt
+                fi
+              done
+            done
+          done < mojang_order.txt
+
+          # Catch any releases not in Mojang manifest
+          while IFS= read -r tag; do
+            if ! grep -q "^${tag}$" ordered_tags.txt 2>/dev/null; then
+              echo "$tag" >> ordered_tags.txt
+            fi
+          done < <(jq -r '.[].tagName' filtered_releases.json)
+
+          # Display order
+          COUNT=0
+          while IFS= read -r tag; do
+            COUNT=$((COUNT + 1))
+            NAME=$(jq -r --arg t "$tag" '.[] | select(.tagName == $t) | .name' filtered_releases.json)
+            echo "  $COUNT. $tag → $NAME"
+          done < ordered_tags.txt
+
+          TOTAL_ORDERED=$(wc -l < ordered_tags.txt)
+          echo ""
+          echo "Total: $TOTAL_ORDERED releases"
+
+      - name: Recreate releases in order
+        if: inputs.dry_run == false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════"
+          echo "🔄 RECREATING RELEASES IN ORDER"
+          echo "═══════════════════════════════════════════"
+          echo ""
+
+          # ── STEP 1: Reverse the list ──
+          # GitHub shows newest-created on top
+          # So we need to CREATE oldest first, newest last
+          # That way newest ends up on top
+          tac ordered_tags.txt > reversed_tags.txt
+
+          TOTAL=$(wc -l < reversed_tags.txt)
+
+          # ── STEP 2: Delete ALL releases first ──
+          echo "🗑️ Deleting all $TOTAL releases..."
+          echo ""
+
+          while IFS= read -r TAG; do
+            echo "  🗑️ Deleting: $TAG"
+
+            # Download assets before deleting
+            mkdir -p "assets_${TAG}"
+            ASSET_NAMES=$(jq -r --arg t "$TAG" '.[] | select(.tagName == $t) | .assets[].name' filtered_releases.json 2>/dev/null)
+            for ASSET in $ASSET_NAMES; do
+              gh release download "$TAG" -p "$ASSET" -D "assets_${TAG}" 2>/dev/null || true
+            done
+
+            # Save release body
+            jq -r --arg t "$TAG" '.[] | select(.tagName == $t) | .body' filtered_releases.json > "body_${TAG}.txt" 2>/dev/null || true
+
+            # Save release name
+            jq -r --arg t "$TAG" '.[] | select(.tagName == $t) | .name' filtered_releases.json > "name_${TAG}.txt" 2>/dev/null || true
+
+            # Delete release and tag
+            gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          done < reversed_tags.txt
+
+          echo ""
+          echo "✅ All releases deleted"
+          echo ""
+          sleep 5
+
+          # ── STEP 3: Recreate in reverse order (oldest first) ──
+          echo "🔄 Recreating releases (oldest first → newest last)..."
+          echo ""
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          COUNT=0
+          while IFS= read -r TAG; do
+            COUNT=$((COUNT + 1))
+
+            NAME=$(cat "name_${TAG}.txt" 2>/dev/null || echo "$TAG")
+            BODY=$(cat "body_${TAG}.txt" 2>/dev/null || echo "Release: $TAG")
+
+            echo "[$COUNT/$TOTAL] ✅ Creating: $TAG → $NAME"
+
+            # Create empty commit for unique timestamp
+            git commit --allow-empty -m "Release: $TAG"
+            git push
+
+            sleep 1
+
+            # Build asset list
+            ASSET_FILES=""
+            if [ -d "assets_${TAG}" ]; then
+              for F in assets_${TAG}/*; do
+                if [ -f "$F" ]; then
+                  ASSET_FILES="$ASSET_FILES $F"
+                fi
+              done
+            fi
+
+            # Create release
+            if [ -n "$ASSET_FILES" ]; then
+              gh release create "$TAG" \
+                --title "$NAME" \
+                --notes "$BODY" \
+                $ASSET_FILES
+            else
+              gh release create "$TAG" \
+                --title "$NAME" \
+                --notes "$BODY"
+            fi
+
+            # Cleanup
+            rm -rf "assets_${TAG}" "body_${TAG}.txt" "name_${TAG}.txt"
+
+            sleep 2
+          done < reversed_tags.txt
+
+          echo ""
+          echo "═══════════════════════════════════════════"
+          echo "✅ DONE! $TOTAL releases recreated"
+          echo ""
+          echo "Order on GitHub (top → bottom):"
+          echo ""
+
+          COUNT=0
+          while IFS= read -r tag; do
+            COUNT=$((COUNT + 1))
+            echo "  $COUNT. $tag"
+          done < ordered_tags.txt
+
+          echo "═══════════════════════════════════════════"
