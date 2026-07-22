@@ -1,28 +1,63 @@
-name: Upload, Decompile and Release
+name: 📦 Minecraft Source Release
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Mode'
+        description: '🔧 Mode'
         required: true
         type: choice
         options:
-          - 'Single - Download from URL'
-          - 'Single - Use existing JAR in repo'
-          - 'Batch - From link file'
-      batch_file:
-        description: 'Batch: Which link file?'
+          - '📥 Download & Release (from URL)'
+          - '📂 Release Existing JAR (from repo)'
+          - '📋 Batch Release (from link file)'
+
+      # ── SINGLE MODE OPTIONS ──
+      single_url:
+        description: '🔗 [Single] Download URL'
+        required: false
+        type: string
+        default: ''
+      single_folder:
+        description: '📁 [Single] Category'
         required: false
         type: choice
         options:
-          - 'links_releases.md'
-          - 'links_snapshots.md'
-          - 'links_beta.md'
-          - 'links_alpha.md'
-          - 'links_custom.md'
+          - releases
+          - snapshots
+          - beta
+          - alpha
+      single_version:
+        description: '🏷️ [Single] Version Name (e.g. 26.2)'
+        required: false
+        type: string
+        default: ''
+      single_jar_type:
+        description: '☕ [Single] JAR Type'
+        required: false
+        type: choice
+        options:
+          - client
+          - server
+      single_changelog:
+        description: '📝 [Single] Changelog URL (optional)'
+        required: false
+        type: string
+        default: ''
+
+      # ── BATCH MODE OPTIONS ──
+      batch_file:
+        description: '📄 [Batch] Link File'
+        required: false
+        type: choice
+        options:
+          - links_releases.md
+          - links_snapshots.md
+          - links_beta.md
+          - links_alpha.md
+          - links_custom.md
       batch_jar_type:
-        description: 'Batch: Which JAR type?'
+        description: '☕ [Batch] JAR Type'
         required: false
         type: choice
         options:
@@ -30,54 +65,24 @@ on:
           - client
           - server
       batch_limit:
-        description: 'Batch: Max versions (0 = unlimited)'
+        description: '🔢 [Batch] Max Versions (0 = all)'
         required: false
         type: number
         default: 0
-      download_url:
-        description: 'Single: Download URL'
-        required: false
-        type: string
-        default: ''
-      folder:
-        description: 'Single: Folder'
-        required: false
-        type: choice
-        options:
-          - alpha
-          - beta
-          - snapshots
-          - releases
-      version_name:
-        description: 'Single: Version name (e.g. 26.2)'
-        required: false
-        type: string
-        default: ''
-      jar_content_type:
-        description: 'Single: JAR type'
-        required: false
-        type: choice
-        options:
-          - client
-          - server
-      changelog_url:
-        description: 'Changelog URL (optional)'
-        required: false
-        type: string
-        default: ''
 
-# ════════════════════════════════════════
-# SINGLE MODE
-# ════════════════════════════════════════
+# ════════════════════════════════════════════════
+# SINGLE: DOWNLOAD & RELEASE
+# ════════════════════════════════════════════════
 jobs:
-  single:
-    if: ${{ inputs.mode == 'Single - Download from URL' || inputs.mode == 'Single - Use existing JAR in repo' }}
+  single-download:
+    name: "📥 Download & Release"
+    if: ${{ inputs.mode == '📥 Download & Release (from URL)' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up JDK 21
@@ -86,76 +91,68 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Ensure folders exist
-        run: mkdir -p jars/alpha jars/beta jars/snapshots jars/releases
-
-      - name: Resolve filename
+      - name: Validate inputs
         run: |
-          VERSION="${{ inputs.version_name }}"
-          TYPE="${{ inputs.jar_content_type }}"
-
-          if [ -z "$VERSION" ]; then
-            echo "No version name provided"
+          if [ -z "${{ inputs.single_url }}" ]; then
+            echo "❌ No download URL provided"
+            exit 1
+          fi
+          if [ -z "${{ inputs.single_version }}" ]; then
+            echo "❌ No version name provided"
             exit 1
           fi
 
-          CLEAN_VER=$(echo "$VERSION" | sed 's/.jar//g')
-          FILENAME="${CLEAN_VER}-${TYPE}.jar"
-          JAR_NAME="${CLEAN_VER}-${TYPE}"
+      - name: Setup
+        run: |
+          mkdir -p jars/${{ inputs.single_folder }}
 
-          echo "FILENAME=$FILENAME" >> "$GITHUB_ENV"
-          echo "JAR_NAME=$JAR_NAME" >> "$GITHUB_ENV"
-          echo "VERSION=$CLEAN_VER" >> "$GITHUB_ENV"
+          VERSION=$(echo "${{ inputs.single_version }}" | sed 's/\.jar$//')
+          TYPE="${{ inputs.single_jar_type }}"
+          FOLDER="${{ inputs.single_folder }}"
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "CONTENT_TYPE=$TYPE" >> "$GITHUB_ENV"
-          echo "JAR_FILE=jars/${{ inputs.folder }}/$FILENAME" >> "$GITHUB_ENV"
-          echo "JAR_TYPE=${{ inputs.folder }}" >> "$GITHUB_ENV"
+          echo "JAR_TYPE=$FOLDER" >> "$GITHUB_ENV"
+          echo "JAR_NAME=${VERSION}-${TYPE}" >> "$GITHUB_ENV"
+          echo "FILENAME=${VERSION}-${TYPE}.jar" >> "$GITHUB_ENV"
+          echo "JAR_FILE=jars/${FOLDER}/${VERSION}-${TYPE}.jar" >> "$GITHUB_ENV"
 
       - name: Download JAR
-        if: inputs.mode == 'Single - Download from URL'
         run: |
-          wget -O "${{ env.JAR_FILE }}" "${{ inputs.download_url }}"
+          wget -O "${{ env.JAR_FILE }}" "${{ inputs.single_url }}"
 
           SIZE=$(stat -c%s "${{ env.JAR_FILE }}")
-          echo "Downloaded: ${{ env.JAR_FILE }} ($SIZE bytes)"
+          echo "✅ Downloaded: ${{ env.JAR_FILE }} ($SIZE bytes)"
 
           if [ "$SIZE" -lt 1000 ]; then
-            echo "File too small"
+            echo "❌ File too small — probably not a valid JAR"
             exit 1
           fi
 
-      - name: Commit JAR
-        if: inputs.mode == 'Single - Download from URL'
+      - name: Commit JAR to repo
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "${{ env.JAR_FILE }}"
-          git commit -m "Add ${{ env.FILENAME }}" || echo "Already exists"
-          git push || echo "Push skipped"
+          git diff --cached --quiet || git commit -m "Add ${{ env.FILENAME }} to jars/${{ env.JAR_TYPE }}"
+          git push || true
 
-      - name: Validate JAR
-        run: |
-          if [ ! -f "${{ env.JAR_FILE }}" ]; then
-            echo "JAR not found: ${{ env.JAR_FILE }}"
-            exit 1
-          fi
-
-      - name: Set Release Label
+      - name: Set labels
         run: |
           case "${{ env.JAR_TYPE }}" in
-            alpha)     echo "RELEASE_LABEL=Alpha" >> "$GITHUB_ENV" ;;
-            beta)      echo "RELEASE_LABEL=Beta" >> "$GITHUB_ENV" ;;
-            snapshots) echo "RELEASE_LABEL=Snapshot" >> "$GITHUB_ENV" ;;
-            releases)  echo "RELEASE_LABEL=Release" >> "$GITHUB_ENV" ;;
-            *)         echo "RELEASE_LABEL=Minecraft" >> "$GITHUB_ENV" ;;
+            alpha)     LABEL="Alpha" ;;
+            beta)      LABEL="Beta" ;;
+            snapshots) LABEL="Snapshot" ;;
+            releases)  LABEL="Release" ;;
+            *)         LABEL="Minecraft" ;;
           esac
+          echo "RELEASE_LABEL=$LABEL" >> "$GITHUB_ENV"
 
-      - name: Set Changelog
-        run: |
-          CHANGELOG_URL="${{ inputs.changelog_url }}"
-          if [ -n "$CHANGELOG_URL" ]; then
-            echo "CHANGELOG_LINE=- **Changelog:** [View Changelog]($CHANGELOG_URL)" >> "$GITHUB_ENV"
+          URL="${{ inputs.single_changelog }}"
+          if [ -n "$URL" ]; then
+            echo "CHANGELOG=- **Changelog:** [View Changelog]($URL)" >> "$GITHUB_ENV"
           else
-            echo "CHANGELOG_LINE=" >> "$GITHUB_ENV"
+            echo "CHANGELOG=" >> "$GITHUB_ENV"
           fi
 
       - name: Download Vineflower
@@ -166,41 +163,37 @@ jobs:
           mkdir -p output_src
           java -jar vineflower.jar -j=2 -e=1 -dgs=1 -asc=1 -ind="    " "${{ env.JAR_FILE }}" output_src/
 
-      - name: Analyze Languages
+      - name: Analyze files
         run: |
           TOTAL=$(find output_src -type f | wc -l)
           JAVA=$(find output_src -name "*.java" | wc -l)
-          JSON=$(find output_src -name "*.json" -o -name "*.mcmeta" | wc -l)
+          JSON=$(find output_src \( -name "*.json" -o -name "*.mcmeta" \) | wc -l)
           PNG=$(find output_src -name "*.png" | wc -l)
           OGG=$(find output_src -name "*.ogg" | wc -l)
-          OTHER=$((TOTAL - JAVA - JSON - PNG - OGG))
+          GLSL=$(find output_src \( -name "*.fsh" -o -name "*.vsh" -o -name "*.glsl" \) | wc -l)
+          PROPS=$(find output_src -name "*.properties" | wc -l)
+          OTHER=$((TOTAL - JAVA - JSON - PNG - OGG - GLSL - PROPS))
 
-          if [ "$TOTAL" -gt 0 ]; then
-            {
-              echo "LANG_STATS<<EOF"
-              echo "| Type | Files | % |"
-              echo "|------|-------|---|"
-              for PAIR in "Java:$JAVA" "JSON:$JSON" "PNG:$PNG" "OGG:$OGG" "Other:$OTHER"; do
-                NAME="${PAIR%%:*}"
-                NUM="${PAIR##*:}"
-                if [ "$NUM" -gt 0 ]; then
-                  PCT=$(awk "BEGIN {printf \"%.1f\", ($NUM/$TOTAL)*100}")
-                  echo "| $NAME | $NUM | $PCT% |"
-                fi
-              done
-              echo ""
-              echo "**Total:** $TOTAL files"
-              echo "EOF"
-            } >> "$GITHUB_ENV"
-          else
-            echo "LANG_STATS=No files" >> "$GITHUB_ENV"
-          fi
+          {
+            echo "LANG_STATS<<EOF"
+            echo "| Type | Files | % |"
+            echo "|------|-------|---|"
+            for PAIR in "Java:$JAVA" "JSON:$JSON" "PNG:$PNG" "OGG:$OGG" "GLSL:$GLSL" "Properties:$PROPS" "Other:$OTHER"; do
+              NAME="${PAIR%%:*}"; NUM="${PAIR##*:}"
+              if [ "$NUM" -gt 0 ] && [ "$TOTAL" -gt 0 ]; then
+                PCT=$(awk "BEGIN {printf \"%.1f\", ($NUM/$TOTAL)*100}")
+                echo "| $NAME | $NUM | $PCT% |"
+              fi
+            done
+            echo ""
+            echo "**Total:** $TOTAL files"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
 
-      - name: Zip Source
-        run: cd output_src && zip -r "../${{ env.JAR_NAME }}-source.zip" .
-
-      - name: Copy JAR
-        run: cp "${{ env.JAR_FILE }}" "${{ env.JAR_NAME }}.jar"
+      - name: Package
+        run: |
+          cd output_src && zip -r "../${{ env.JAR_NAME }}-source.zip" . && cd ..
+          cp "${{ env.JAR_FILE }}" "${{ env.JAR_NAME }}.jar"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -208,21 +201,23 @@ jobs:
           tag_name: "${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
           name: "[${{ env.RELEASE_LABEL }}] ${{ env.VERSION }} (${{ env.CONTENT_TYPE }})"
           body: |
-            ## Minecraft `${{ env.VERSION }}` - ${{ env.CONTENT_TYPE }} (${{ env.RELEASE_LABEL }})
+            ## Minecraft `${{ env.VERSION }}` — ${{ env.CONTENT_TYPE }} (${{ env.RELEASE_LABEL }})
 
-            ### Downloads
+            ### 📥 Downloads
             | File | Description |
             |------|-------------|
-            | `${{ env.JAR_NAME }}-source.zip` | Decompiled Java source code |
+            | `${{ env.JAR_NAME }}-source.zip` | Decompiled Java source |
             | `${{ env.JAR_NAME }}.jar` | Original ${{ env.CONTENT_TYPE }} JAR |
 
-            ### File Breakdown
+            ### 📊 File Breakdown
             ${{ env.LANG_STATS }}
 
-            ### Info
+            ### ℹ️ Info
+            - **Version:** ${{ env.VERSION }}
+            - **Type:** ${{ env.CONTENT_TYPE }}
             - **Classification:** ${{ env.RELEASE_LABEL }}
-            - **Decompiler:** Vineflower
-            ${{ env.CHANGELOG_LINE }}
+            - **Decompiler:** Vineflower 1.12.0
+            ${{ env.CHANGELOG }}
           files: |
             ${{ env.JAR_NAME }}-source.zip
             ${{ env.JAR_NAME }}.jar
@@ -231,17 +226,156 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-# ════════════════════════════════════════
-# BATCH MODE - PARSE
-# ════════════════════════════════════════
+# ════════════════════════════════════════════════
+# SINGLE: RELEASE EXISTING JAR
+# ════════════════════════════════════════════════
+  single-existing:
+    name: "📂 Release Existing JAR"
+    if: ${{ inputs.mode == '📂 Release Existing JAR (from repo)' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Validate inputs
+        run: |
+          if [ -z "${{ inputs.single_version }}" ]; then
+            echo "❌ No version name provided"
+            exit 1
+          fi
+
+      - name: Setup
+        run: |
+          VERSION=$(echo "${{ inputs.single_version }}" | sed 's/\.jar$//')
+          TYPE="${{ inputs.single_jar_type }}"
+          FOLDER="${{ inputs.single_folder }}"
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "CONTENT_TYPE=$TYPE" >> "$GITHUB_ENV"
+          echo "JAR_TYPE=$FOLDER" >> "$GITHUB_ENV"
+          echo "JAR_NAME=${VERSION}-${TYPE}" >> "$GITHUB_ENV"
+          echo "JAR_FILE=jars/${FOLDER}/${VERSION}-${TYPE}.jar" >> "$GITHUB_ENV"
+
+      - name: Validate JAR exists
+        run: |
+          if [ ! -f "${{ env.JAR_FILE }}" ]; then
+            echo "❌ JAR not found: ${{ env.JAR_FILE }}"
+            echo ""
+            echo "Available JARs in jars/${{ env.JAR_TYPE }}/:"
+            ls jars/${{ env.JAR_TYPE }}/ 2>/dev/null || echo "  (empty)"
+            exit 1
+          fi
+
+      - name: Set labels
+        run: |
+          case "${{ env.JAR_TYPE }}" in
+            alpha)     LABEL="Alpha" ;;
+            beta)      LABEL="Beta" ;;
+            snapshots) LABEL="Snapshot" ;;
+            releases)  LABEL="Release" ;;
+            *)         LABEL="Minecraft" ;;
+          esac
+          echo "RELEASE_LABEL=$LABEL" >> "$GITHUB_ENV"
+
+          URL="${{ inputs.single_changelog }}"
+          if [ -n "$URL" ]; then
+            echo "CHANGELOG=- **Changelog:** [View Changelog]($URL)" >> "$GITHUB_ENV"
+          else
+            echo "CHANGELOG=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Download Vineflower
+        run: wget -O vineflower.jar "https://repo1.maven.org/maven2/org/vineflower/vineflower/1.12.0/vineflower-1.12.0.jar"
+
+      - name: Decompile
+        run: |
+          mkdir -p output_src
+          java -jar vineflower.jar -j=2 -e=1 -dgs=1 -asc=1 -ind="    " "${{ env.JAR_FILE }}" output_src/
+
+      - name: Analyze files
+        run: |
+          TOTAL=$(find output_src -type f | wc -l)
+          JAVA=$(find output_src -name "*.java" | wc -l)
+          JSON=$(find output_src \( -name "*.json" -o -name "*.mcmeta" \) | wc -l)
+          PNG=$(find output_src -name "*.png" | wc -l)
+          OGG=$(find output_src -name "*.ogg" | wc -l)
+          GLSL=$(find output_src \( -name "*.fsh" -o -name "*.vsh" -o -name "*.glsl" \) | wc -l)
+          PROPS=$(find output_src -name "*.properties" | wc -l)
+          OTHER=$((TOTAL - JAVA - JSON - PNG - OGG - GLSL - PROPS))
+
+          {
+            echo "LANG_STATS<<EOF"
+            echo "| Type | Files | % |"
+            echo "|------|-------|---|"
+            for PAIR in "Java:$JAVA" "JSON:$JSON" "PNG:$PNG" "OGG:$OGG" "GLSL:$GLSL" "Properties:$PROPS" "Other:$OTHER"; do
+              NAME="${PAIR%%:*}"; NUM="${PAIR##*:}"
+              if [ "$NUM" -gt 0 ] && [ "$TOTAL" -gt 0 ]; then
+                PCT=$(awk "BEGIN {printf \"%.1f\", ($NUM/$TOTAL)*100}")
+                echo "| $NAME | $NUM | $PCT% |"
+              fi
+            done
+            echo ""
+            echo "**Total:** $TOTAL files"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Package
+        run: |
+          cd output_src && zip -r "../${{ env.JAR_NAME }}-source.zip" . && cd ..
+          cp "${{ env.JAR_FILE }}" "${{ env.JAR_NAME }}.jar"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
+          name: "[${{ env.RELEASE_LABEL }}] ${{ env.VERSION }} (${{ env.CONTENT_TYPE }})"
+          body: |
+            ## Minecraft `${{ env.VERSION }}` — ${{ env.CONTENT_TYPE }} (${{ env.RELEASE_LABEL }})
+
+            ### 📥 Downloads
+            | File | Description |
+            |------|-------------|
+            | `${{ env.JAR_NAME }}-source.zip` | Decompiled Java source |
+            | `${{ env.JAR_NAME }}.jar` | Original ${{ env.CONTENT_TYPE }} JAR |
+
+            ### 📊 File Breakdown
+            ${{ env.LANG_STATS }}
+
+            ### ℹ️ Info
+            - **Version:** ${{ env.VERSION }}
+            - **Type:** ${{ env.CONTENT_TYPE }}
+            - **Classification:** ${{ env.RELEASE_LABEL }}
+            - **Decompiler:** Vineflower 1.12.0
+            ${{ env.CHANGELOG }}
+          files: |
+            ${{ env.JAR_NAME }}-source.zip
+            ${{ env.JAR_NAME }}.jar
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+# ════════════════════════════════════════════════
+# BATCH: PARSE LINK FILE
+# ════════════════════════════════════════════════
   batch-parse:
-    if: ${{ inputs.mode == 'Batch - From link file' }}
+    name: "📋 Parse Link File"
+    if: ${{ inputs.mode == '📋 Batch Release (from link file)' }}
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.parse.outputs.matrix }}
-      section: ${{ steps.parse.outputs.section }}
+
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Parse link file
@@ -251,8 +385,9 @@ jobs:
 
           if [ ! -f "$FILE" ]; then
             echo "❌ File not found: $FILE"
+            echo ""
             echo "Available files:"
-            ls -la links/ || echo "No links folder"
+            ls links/ 2>/dev/null || echo "  No links folder found"
             exit 1
           fi
 
@@ -264,76 +399,61 @@ jobs:
             links_alpha.md)     SECTION="alpha" ;;
             *)                  SECTION="custom" ;;
           esac
-          
-          echo "section=$SECTION" >> "$GITHUB_OUTPUT"
 
           JAR_TYPE="${{ inputs.batch_jar_type }}"
           LIMIT="${{ inputs.batch_limit }}"
 
-          CURRENT_VERSION=""
-          CLIENT_URL=""
-          SERVER_URL=""
+          VERSION=""
+          CLIENT=""
+          SERVER=""
           ENTRIES="[]"
           COUNT=0
 
-          while IFS= read -r line || [ -n "$line" ]; do
-            # Detect version: ### 1.21.3
-            if echo "$line" | grep -qE '^### '; then
-              # Save previous version
-              if [ -n "$CURRENT_VERSION" ]; then
-                if [ "$LIMIT" -eq 0 ] || [ "$COUNT" -lt "$LIMIT" ]; then
-                  if { [ "$JAR_TYPE" = "both" ] || [ "$JAR_TYPE" = "client" ]; } && [ -n "$CLIENT_URL" ]; then
-                    ENTRIES=$(echo "$ENTRIES" | jq --arg v "$CURRENT_VERSION" --arg u "$CLIENT_URL" --arg s "$SECTION" --arg t "client" '. += [{"version": $v, "url": $u, "section": $s, "type": $t}]')
-                    COUNT=$((COUNT + 1))
-                  fi
-                  if { [ "$JAR_TYPE" = "both" ] || [ "$JAR_TYPE" = "server" ]; } && [ -n "$SERVER_URL" ]; then
-                    ENTRIES=$(echo "$ENTRIES" | jq --arg v "$CURRENT_VERSION" --arg u "$SERVER_URL" --arg s "$SECTION" --arg t "server" '. += [{"version": $v, "url": $u, "section": $s, "type": $t}]')
-                    COUNT=$((COUNT + 1))
-                  fi
+          save_version() {
+            if [ -n "$VERSION" ]; then
+              if [ "$LIMIT" -eq 0 ] || [ "$COUNT" -lt "$LIMIT" ]; then
+                if { [ "$JAR_TYPE" = "both" ] || [ "$JAR_TYPE" = "client" ]; } && [ -n "$CLIENT" ]; then
+                  ENTRIES=$(echo "$ENTRIES" | jq --arg v "$VERSION" --arg u "$CLIENT" --arg s "$SECTION" --arg t "client" '. += [{"version": $v, "url": $u, "section": $s, "type": $t}]')
+                  COUNT=$((COUNT + 1))
+                fi
+                if { [ "$JAR_TYPE" = "both" ] || [ "$JAR_TYPE" = "server" ]; } && [ -n "$SERVER" ]; then
+                  ENTRIES=$(echo "$ENTRIES" | jq --arg v "$VERSION" --arg u "$SERVER" --arg s "$SECTION" --arg t "server" '. += [{"version": $v, "url": $u, "section": $s, "type": $t}]')
+                  COUNT=$((COUNT + 1))
                 fi
               fi
+            fi
+          }
 
-              CURRENT_VERSION=$(echo "$line" | sed 's/^### //')
-              CLIENT_URL=""
-              SERVER_URL=""
+          while IFS= read -r line || [ -n "$line" ]; do
+            if echo "$line" | grep -qE '^### '; then
+              save_version
+              VERSION=$(echo "$line" | sed 's/^### //')
+              CLIENT=""
+              SERVER=""
               continue
             fi
-
-            # Detect client URL
-            if echo "$line" | grep -qiE '^\- *client'; then
-              CLIENT_URL=$(echo "$line" | grep -oP 'https?://[^\s\)]+')
+            if echo "$line" | grep -qiE '^\- *[Cc]lient'; then
+              CLIENT=$(echo "$line" | grep -oP 'https?://[^\s\)]+')
               continue
             fi
-
-            # Detect server URL
-            if echo "$line" | grep -qiE '^\- *server'; then
-              SERVER_URL=$(echo "$line" | grep -oP 'https?://[^\s\)]+')
+            if echo "$line" | grep -qiE '^\- *[Ss]erver'; then
+              SERVER=$(echo "$line" | grep -oP 'https?://[^\s\)]+')
               continue
             fi
-
           done < "$FILE"
 
-          # Save last version
-          if [ -n "$CURRENT_VERSION" ]; then
-            if [ "$LIMIT" -eq 0 ] || [ "$COUNT" -lt "$LIMIT" ]; then
-              if { [ "$JAR_TYPE" = "both" ] || [ "$JAR_TYPE" = "client" ]; } && [ -n "$CLIENT_URL" ]; then
-                ENTRIES=$(echo "$ENTRIES" | jq --arg v "$CURRENT_VERSION" --arg u "$CLIENT_URL" --arg s "$SECTION" --arg t "client" '. += [{"version": $v, "url": $u, "section": $s, "type": $t}]')
-              fi
-              if { [ "$JAR_TYPE" = "both" ] || [ "$JAR_TYPE" = "server" ]; } && [ -n "$SERVER_URL" ]; then
-                ENTRIES=$(echo "$ENTRIES" | jq --arg v "$CURRENT_VERSION" --arg u "$SERVER_URL" --arg s "$SECTION" --arg t "server" '. += [{"version": $v, "url": $u, "section": $s, "type": $t}]')
-              fi
-            fi
-          fi
+          save_version
 
           TOTAL=$(echo "$ENTRIES" | jq 'length')
           echo "📋 Found $TOTAL entries to process"
 
           echo "matrix=$(echo "$ENTRIES" | jq -c '{"include": .}')" >> "$GITHUB_OUTPUT"
 
-# ════════════════════════════════════════
-# BATCH MODE - PROCESS
-# ════════════════════════════════════════
+# ════════════════════════════════════════════════
+# BATCH: PROCESS EACH VERSION
+# ════════════════════════════════════════════════
   batch-process:
+    name: "⚙️ ${{ matrix.version }} (${{ matrix.type }})"
     needs: batch-parse
     if: ${{ fromJson(needs.batch-parse.outputs.matrix).include[0] != null }}
     runs-on: ubuntu-latest
@@ -345,7 +465,7 @@ jobs:
       matrix: ${{ fromJson(needs.batch-parse.outputs.matrix) }}
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up JDK 21
@@ -362,15 +482,12 @@ jobs:
           TYPE="${{ matrix.type }}"
           SECTION="${{ matrix.section }}"
 
-          FILENAME="${VERSION}-${TYPE}.jar"
-          JAR_NAME="${VERSION}-${TYPE}"
-
-          echo "FILENAME=$FILENAME" >> "$GITHUB_ENV"
-          echo "JAR_NAME=$JAR_NAME" >> "$GITHUB_ENV"
-          echo "JAR_FILE=jars/${SECTION}/${FILENAME}" >> "$GITHUB_ENV"
-          echo "JAR_TYPE=$SECTION" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "CONTENT_TYPE=$TYPE" >> "$GITHUB_ENV"
+          echo "JAR_TYPE=$SECTION" >> "$GITHUB_ENV"
+          echo "JAR_NAME=${VERSION}-${TYPE}" >> "$GITHUB_ENV"
+          echo "FILENAME=${VERSION}-${TYPE}.jar" >> "$GITHUB_ENV"
+          echo "JAR_FILE=jars/${SECTION}/${VERSION}-${TYPE}.jar" >> "$GITHUB_ENV"
 
       - name: Check if release exists
         id: check
@@ -379,7 +496,7 @@ jobs:
         run: |
           TAG="${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
           if gh release view "$TAG" > /dev/null 2>&1; then
-            echo "⏭️ Release exists: $TAG"
+            echo "⏭️ Skipping $TAG — already exists"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -391,10 +508,10 @@ jobs:
           wget -O "${{ env.JAR_FILE }}" "${{ matrix.url }}"
 
           SIZE=$(stat -c%s "${{ env.JAR_FILE }}")
-          echo "Downloaded: ${{ env.JAR_FILE }} ($SIZE bytes)"
+          echo "✅ Downloaded: ${{ env.JAR_FILE }} ($SIZE bytes)"
 
           if [ "$SIZE" -lt 1000 ]; then
-            echo "File too small"
+            echo "❌ File too small"
             exit 1
           fi
 
@@ -405,8 +522,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git pull --rebase || true
           git add "${{ env.JAR_FILE }}"
-          git commit -m "Add ${{ env.FILENAME }}" || echo "Exists"
-          git push || echo "Push skipped"
+          git diff --cached --quiet || git commit -m "Add ${{ env.FILENAME }}"
+          git push || true
 
       - name: Download Vineflower
         if: steps.check.outputs.skip == 'false'
@@ -418,54 +535,51 @@ jobs:
           mkdir -p output_src
           java -jar vineflower.jar -j=2 -e=1 -dgs=1 -asc=1 -ind="    " "${{ env.JAR_FILE }}" output_src/
 
-      - name: Analyze Languages
+      - name: Analyze files
         if: steps.check.outputs.skip == 'false'
         run: |
           TOTAL=$(find output_src -type f | wc -l)
           JAVA=$(find output_src -name "*.java" | wc -l)
-          JSON=$(find output_src -name "*.json" -o -name "*.mcmeta" | wc -l)
+          JSON=$(find output_src \( -name "*.json" -o -name "*.mcmeta" \) | wc -l)
           PNG=$(find output_src -name "*.png" | wc -l)
           OGG=$(find output_src -name "*.ogg" | wc -l)
-          OTHER=$((TOTAL - JAVA - JSON - PNG - OGG))
+          GLSL=$(find output_src \( -name "*.fsh" -o -name "*.vsh" -o -name "*.glsl" \) | wc -l)
+          PROPS=$(find output_src -name "*.properties" | wc -l)
+          OTHER=$((TOTAL - JAVA - JSON - PNG - OGG - GLSL - PROPS))
 
-          if [ "$TOTAL" -gt 0 ]; then
-            {
-              echo "LANG_STATS<<EOF"
-              echo "| Type | Files | % |"
-              echo "|------|-------|---|"
-              for PAIR in "Java:$JAVA" "JSON:$JSON" "PNG:$PNG" "OGG:$OGG" "Other:$OTHER"; do
-                NAME="${PAIR%%:*}"
-                NUM="${PAIR##*:}"
-                if [ "$NUM" -gt 0 ]; then
-                  PCT=$(awk "BEGIN {printf \"%.1f\", ($NUM/$TOTAL)*100}")
-                  echo "| $NAME | $NUM | $PCT% |"
-                fi
-              done
-              echo "**Total:** $TOTAL files"
-              echo "EOF"
-            } >> "$GITHUB_ENV"
-          else
-            echo "LANG_STATS=No files" >> "$GITHUB_ENV"
-          fi
+          {
+            echo "LANG_STATS<<EOF"
+            echo "| Type | Files | % |"
+            echo "|------|-------|---|"
+            for PAIR in "Java:$JAVA" "JSON:$JSON" "PNG:$PNG" "OGG:$OGG" "GLSL:$GLSL" "Properties:$PROPS" "Other:$OTHER"; do
+              NAME="${PAIR%%:*}"; NUM="${PAIR##*:}"
+              if [ "$NUM" -gt 0 ] && [ "$TOTAL" -gt 0 ]; then
+                PCT=$(awk "BEGIN {printf \"%.1f\", ($NUM/$TOTAL)*100}")
+                echo "| $NAME | $NUM | $PCT% |"
+              fi
+            done
+            echo ""
+            echo "**Total:** $TOTAL files"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
 
-      - name: Zip Source
+      - name: Package
         if: steps.check.outputs.skip == 'false'
-        run: cd output_src && zip -r "../${{ env.JAR_NAME }}-source.zip" .
-
-      - name: Copy JAR
-        if: steps.check.outputs.skip == 'false'
-        run: cp "${{ env.JAR_FILE }}" "${{ env.JAR_NAME }}.jar"
+        run: |
+          cd output_src && zip -r "../${{ env.JAR_NAME }}-source.zip" . && cd ..
+          cp "${{ env.JAR_FILE }}" "${{ env.JAR_NAME }}.jar"
 
       - name: Set Release Label
         if: steps.check.outputs.skip == 'false'
         run: |
           case "${{ env.JAR_TYPE }}" in
-            alpha)     echo "RELEASE_LABEL=Alpha" >> "$GITHUB_ENV" ;;
-            beta)      echo "RELEASE_LABEL=Beta" >> "$GITHUB_ENV" ;;
-            snapshots) echo "RELEASE_LABEL=Snapshot" >> "$GITHUB_ENV" ;;
-            releases)  echo "RELEASE_LABEL=Release" >> "$GITHUB_ENV" ;;
-            *)         echo "RELEASE_LABEL=Minecraft" >> "$GITHUB_ENV" ;;
+            alpha)     LABEL="Alpha" ;;
+            beta)      LABEL="Beta" ;;
+            snapshots) LABEL="Snapshot" ;;
+            releases)  LABEL="Release" ;;
+            *)         LABEL="Minecraft" ;;
           esac
+          echo "RELEASE_LABEL=$LABEL" >> "$GITHUB_ENV"
 
       - name: Create Release
         if: steps.check.outputs.skip == 'false'
@@ -474,353 +588,22 @@ jobs:
           tag_name: "${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
           name: "[${{ env.RELEASE_LABEL }}] ${{ env.VERSION }} (${{ env.CONTENT_TYPE }})"
           body: |
-            ## Minecraft `${{ env.VERSION }}` - ${{ env.CONTENT_TYPE }} (${{ env.RELEASE_LABEL }})
+            ## Minecraft `${{ env.VERSION }}` — ${{ env.CONTENT_TYPE }} (${{ env.RELEASE_LABEL }})
 
-            ### Downloads
+            ### 📥 Downloads
             | File | Description |
             |------|-------------|
-            | `${{ env.JAR_NAME }}-source.zip` | Decompiled source code |
+            | `${{ env.JAR_NAME }}-source.zip` | Decompiled Java source |
             | `${{ env.JAR_NAME }}.jar` | Original ${{ env.CONTENT_TYPE }} JAR |
 
-            ### File Breakdown
+            ### 📊 File Breakdown
             ${{ env.LANG_STATS }}
 
-            ### Info
+            ### ℹ️ Info
             - **Version:** ${{ env.VERSION }}
             - **Type:** ${{ env.CONTENT_TYPE }}
             - **Classification:** ${{ env.RELEASE_LABEL }}
-            - **Decompiler:** Vineflower
-          files: |
-            ${{ env.JAR_NAME }}-source.zip
-            ${{ env.JAR_NAME }}.jar
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}name: Upload, Decompile and Release
-
-on:
-  push:
-    paths:
-      - 'jars/alpha/*.jar'
-      - 'jars/beta/*.jar'
-      - 'jars/snapshots/*.jar'
-      - 'jars/releases/*.jar'
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: 'Mode'
-        required: true
-        type: choice
-        options:
-          - 'Download from URL'
-          - 'Use existing JAR in repo'
-      download_url:
-        description: 'Download URL (only for Download mode)'
-        required: false
-        type: string
-        default: ''
-      folder:
-        description: 'Folder'
-        required: true
-        type: choice
-        options:
-          - alpha
-          - beta
-          - snapshots
-          - releases
-      keep_original_name:
-        description: 'Use the original filename from the URL?'
-        required: true
-        type: boolean
-        default: false
-      filename:
-        description: 'Name (e.g. 26.2 or 26.2.jar - .jar added automatically)'
-        required: false
-        type: string
-        default: ''
-      changelog_url:
-        description: 'Changelog URL (optional)'
-        required: false
-        type: string
-        default: ''
-
-jobs:
-  process:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-
-      - name: Ensure folders exist
-        run: |
-          mkdir -p jars/alpha jars/beta jars/snapshots jars/releases
-
-      # ── RESOLVE FILENAME ──
-      - name: Resolve filename
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          if [ "${{ inputs.keep_original_name }}" = "true" ] && [ "${{ inputs.mode }}" = "Download from URL" ]; then
-            URL="${{ inputs.download_url }}"
-            RESOLVED=$(curl -sLI -o /dev/null -w '%{url_effective}' "$URL")
-            FILENAME=$(basename "$RESOLVED")
-
-            if [[ "$FILENAME" != *.jar ]]; then
-              FILENAME="download.jar"
-            fi
-          else
-            FILENAME="${{ inputs.filename }}"
-
-            if [ -z "$FILENAME" ]; then
-              echo "No filename provided"
-              exit 1
-            fi
-
-            if [[ "$FILENAME" != *.jar ]]; then
-              FILENAME="${FILENAME}.jar"
-            fi
-          fi
-
-          echo "FILENAME=$FILENAME" >> "$GITHUB_ENV"
-          echo "Using filename: $FILENAME"
-
-      # ── DOWNLOAD MODE ──
-      - name: Download JAR
-        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'Download from URL'
-        run: |
-          URL="${{ inputs.download_url }}"
-
-          if [ -z "$URL" ]; then
-            echo "No URL provided"
-            exit 1
-          fi
-
-          wget -O "jars/${{ inputs.folder }}/${{ env.FILENAME }}" "$URL"
-
-      - name: Verify download
-        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'Download from URL'
-        run: |
-          FILE="jars/${{ inputs.folder }}/${{ env.FILENAME }}"
-          if [ ! -f "$FILE" ]; then
-            echo "Download failed"
-            exit 1
-          fi
-
-          SIZE=$(stat -c%s "$FILE")
-          echo "Downloaded: $FILE ($SIZE bytes)"
-
-          if [ "$SIZE" -lt 1000 ]; then
-            echo "File too small. Probably not a valid JAR."
-            exit 1
-          fi
-
-      - name: Commit downloaded JAR
-        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'Download from URL'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add "jars/${{ inputs.folder }}/${{ env.FILENAME }}"
-
-          if git diff --cached --quiet; then
-            echo "File already exists. Skipping commit."
-          else
-            git commit -m "Add ${{ env.FILENAME }} to jars/${{ inputs.folder }}"
-            git push
-          fi
-
-      # ── DETECT JAR ──
-      - name: Detect JAR
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            FOLDER="${{ inputs.folder }}"
-            JAR_FILENAME="${{ env.FILENAME }}"
-            CHANGED_JAR="jars/$FOLDER/$JAR_FILENAME"
-          else
-            CHANGED_JAR=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | grep -E '^jars/(alpha|beta|snapshots|releases)/.*\.jar$' | head -n 1)
-
-            if [ -z "$CHANGED_JAR" ]; then
-              CHANGED_JAR=$(find jars -name "*.jar" -printf "%T@ %p\n" | sort -n | tail -1 | cut -d' ' -f2-)
-            fi
-
-            FOLDER=$(echo "$CHANGED_JAR" | cut -d'/' -f2)
-          fi
-
-          JAR_NAME=$(basename "$CHANGED_JAR" .jar)
-
-          echo "JAR_FILE=$CHANGED_JAR" >> "$GITHUB_ENV"
-          echo "JAR_NAME=$JAR_NAME" >> "$GITHUB_ENV"
-          echo "JAR_TYPE=$FOLDER" >> "$GITHUB_ENV"
-
-      - name: Validate JAR exists
-        run: |
-          if [ ! -f "${{ env.JAR_FILE }}" ]; then
-            echo "JAR not found: ${{ env.JAR_FILE }}"
-            exit 1
-          fi
-
-      # ── LABELS ──
-      - name: Set Release Label
-        run: |
-          case "${{ env.JAR_TYPE }}" in
-            alpha)     echo "RELEASE_LABEL=Alpha" >> "$GITHUB_ENV" ;;
-            beta)      echo "RELEASE_LABEL=Beta" >> "$GITHUB_ENV" ;;
-            snapshots) echo "RELEASE_LABEL=Snapshot" >> "$GITHUB_ENV" ;;
-            releases)  echo "RELEASE_LABEL=Release" >> "$GITHUB_ENV" ;;
-            *)         echo "RELEASE_LABEL=Minecraft" >> "$GITHUB_ENV" ;;
-          esac
-
-      - name: Set Changelog
-        run: |
-          CHANGELOG_URL="${{ inputs.changelog_url }}"
-          if [ -n "$CHANGELOG_URL" ]; then
-            echo "CHANGELOG_LINE=- **Changelog:** [View Changelog]($CHANGELOG_URL)" >> "$GITHUB_ENV"
-          else
-            echo "CHANGELOG_LINE=" >> "$GITHUB_ENV"
-          fi
-
-      # ── DECOMPILE ──
-      - name: Download Vineflower
-        env:
-          VINEFLOWER_VERSION: 1.12.0
-        run: |
-          wget -O vineflower.jar "https://repo1.maven.org/maven2/org/vineflower/vineflower/${VINEFLOWER_VERSION}/vineflower-${VINEFLOWER_VERSION}.jar"
-
-      - name: Decompile JAR
-        run: |
-          mkdir -p output_src
-          java -jar vineflower.jar \
-            -j=2 \
-            -e=1 \
-            -dgs=1 \
-            -asc=1 \
-            -ind="    " \
-            "${{ env.JAR_FILE }}" \
-            output_src/
-
-      # ── LANGUAGE STATS ──
-      - name: Analyze languages
-        run: |
-          echo "Scanning decompiled source..."
-
-          TOTAL=0
-          JAVA=0
-          KOTLIN=0
-          SCALA=0
-          JSON=0
-          XML=0
-          PROPERTIES=0
-          HTML=0
-          CSS=0
-          JS=0
-          GLSL=0
-          PNG=0
-          OGG=0
-          TXT=0
-          OTHER=0
-
-          while IFS= read -r -d '' file; do
-            TOTAL=$((TOTAL + 1))
-            case "${file##*.}" in
-              java)       JAVA=$((JAVA + 1)) ;;
-              kt)         KOTLIN=$((KOTLIN + 1)) ;;
-              scala)      SCALA=$((SCALA + 1)) ;;
-              json|mcmeta) JSON=$((JSON + 1)) ;;
-              xml)        XML=$((XML + 1)) ;;
-              properties) PROPERTIES=$((PROPERTIES + 1)) ;;
-              html|htm)   HTML=$((HTML + 1)) ;;
-              css)        CSS=$((CSS + 1)) ;;
-              js)         JS=$((JS + 1)) ;;
-              fsh|vsh|glsl) GLSL=$((GLSL + 1)) ;;
-              png)        PNG=$((PNG + 1)) ;;
-              ogg)        OGG=$((OGG + 1)) ;;
-              txt|md)     TXT=$((TXT + 1)) ;;
-              *)          OTHER=$((OTHER + 1)) ;;
-            esac
-          done < <(find output_src -type f -print0)
-
-          if [ "$TOTAL" -eq 0 ]; then
-            echo "LANG_STATS=No files found" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
-          STATS=""
-
-          add_stat() {
-            local name=$1
-            local count=$2
-            if [ "$count" -gt 0 ]; then
-              local pct=$(awk "BEGIN {printf \"%.1f\", ($count/$TOTAL)*100}")
-              STATS="${STATS}| ${name} | ${count} | ${pct}% |\n"
-            fi
-          }
-
-          add_stat "Java" $JAVA
-          add_stat "Kotlin" $KOTLIN
-          add_stat "Scala" $SCALA
-          add_stat "JSON" $JSON
-          add_stat "XML" $XML
-          add_stat "Properties" $PROPERTIES
-          add_stat "HTML" $HTML
-          add_stat "CSS" $CSS
-          add_stat "JavaScript" $JS
-          add_stat "GLSL (Shaders)" $GLSL
-          add_stat "PNG (Images)" $PNG
-          add_stat "OGG (Audio)" $OGG
-          add_stat "Text" $TXT
-          add_stat "Other" $OTHER
-
-          {
-            echo "LANG_STATS<<EOF"
-            echo "| Language/Type | Files | Percentage |"
-            echo "|--------------|-------|------------|"
-            echo -e "$STATS"
-            echo ""
-            echo "**Total Files:** $TOTAL"
-            echo "EOF"
-          } >> "$GITHUB_ENV"
-
-      # ── ZIP ──
-      - name: Zip Source Code
-        run: |
-          cd output_src
-          zip -r "../${{ env.JAR_NAME }}-source.zip" .
-          cd ..
-
-      - name: Copy JAR for release
-        run: |
-          cp "${{ env.JAR_FILE }}" "${{ env.JAR_NAME }}.jar"
-
-      # ── RELEASE ──
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: "${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
-          name: "[${{ env.RELEASE_LABEL }}] ${{ env.JAR_NAME }}"
-          body: |
-            ## Minecraft `${{ env.JAR_NAME }}` (${{ env.RELEASE_LABEL }})
-
-            ### Downloads
-            | File | Description |
-            |------|-------------|
-            | `${{ env.JAR_NAME }}-source.zip` | Decompiled Java source code |
-            | `${{ env.JAR_NAME }}.jar` | Original client JAR |
-
-            ### File Breakdown
-            ${{ env.LANG_STATS }}
-
-            ### Info
-            - **Classification:** ${{ env.RELEASE_LABEL }}
-            - **Decompiler:** Vineflower
-            ${{ env.CHANGELOG_LINE }}
+            - **Decompiler:** Vineflower 1.12.0
           files: |
             ${{ env.JAR_NAME }}-source.zip
             ${{ env.JAR_NAME }}.jar
