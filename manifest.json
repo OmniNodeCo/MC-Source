@@ -19,5 +19,7 @@
     "client",
     "server"
   ],
-  "processed": []
+  "processed": [
+    "alpha/a1.2.6-client"
+  ]
 }
