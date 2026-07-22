@@ -1,0 +1,23 @@
+{
+  "project": "MC-Source",
+  "description": "Decompiled Minecraft Source Code",
+  "decompiler": "Vineflower 1.12.0",
+  "categories": [
+    "releases",
+    "snapshots",
+    "beta",
+    "alpha"
+  ],
+  "link_files": [
+    "links/links_releases.md",
+    "links/links_snapshots.md",
+    "links/links_beta.md",
+    "links/links_alpha.md",
+    "links/links_custom.md"
+  ],
+  "jar_types": [
+    "client",
+    "server"
+  ],
+  "processed": []
+}
