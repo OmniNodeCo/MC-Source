@@ -75,7 +75,7 @@ on:
 # ════════════════════════════════════════════════
 jobs:
   setup:
-    name: "🔧 Setup Manifest"
+    name: "🔧 Setup"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -91,54 +91,35 @@ jobs:
           if [ ! -f "$MANIFEST" ]; then
             echo "📝 Creating manifest.json..."
 
-            cat > "$MANIFEST" << 'MANIFEST_EOF'
+            cat > "$MANIFEST" << 'EOF'
           {
             "project": "MC-Source",
             "description": "Decompiled Minecraft Source Code",
             "decompiler": "Vineflower 1.12.0",
-            "categories": [
-              "releases",
-              "snapshots",
-              "beta",
-              "alpha"
-            ],
-            "link_files": [
-              "links/links_releases.md",
-              "links/links_snapshots.md",
-              "links/links_beta.md",
-              "links/links_alpha.md",
-              "links/links_custom.md"
-            ],
-            "jar_types": [
-              "client",
-              "server"
-            ],
+            "categories": ["releases", "snapshots", "beta", "alpha"],
             "processed": []
           }
-          MANIFEST_EOF
-          else
-            echo "✅ manifest.json already exists"
+          EOF
           fi
 
-      - name: Ensure all folders exist
+      - name: Ensure folders exist
         run: |
           mkdir -p jars/alpha jars/beta jars/snapshots jars/releases
           mkdir -p links
 
-          # Create .gitkeep files to preserve empty folders
           for DIR in jars/alpha jars/beta jars/snapshots jars/releases links; do
             if [ ! "$(ls -A $DIR 2>/dev/null)" ]; then
               touch "$DIR/.gitkeep"
             fi
           done
 
-      - name: Commit manifest and folders
+      - name: Commit setup
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add manifest.json jars/ links/
-          git diff --cached --quiet || git commit -m "🔧 Setup: Create manifest and folders"
+          git add -A
+          git diff --cached --quiet || git commit -m "🔧 Setup"
           git push || true
 
 # ════════════════════════════════════════════════
@@ -218,7 +199,7 @@ jobs:
             exit 1
           fi
 
-      - name: Commit JAR to repo
+      - name: Commit JAR
         if: steps.check.outputs.skip == 'false'
         run: |
           git config user.name "github-actions[bot]"
@@ -226,22 +207,6 @@ jobs:
           git add "${{ env.JAR_FILE }}"
           git diff --cached --quiet || git commit -m "Add ${{ env.FILENAME }}"
           git push || true
-
-      - name: Update manifest
-        if: steps.check.outputs.skip == 'false'
-        run: |
-          MANIFEST="manifest.json"
-          ENTRY="${{ env.JAR_TYPE }}/${{ env.JAR_NAME }}"
-
-          if jq -e --arg e "$ENTRY" '.processed | index($e)' "$MANIFEST" > /dev/null 2>&1; then
-            echo "Already in manifest"
-          else
-            jq --arg e "$ENTRY" '.processed += [$e]' "$MANIFEST" > tmp.json && mv tmp.json "$MANIFEST"
-
-            git add "$MANIFEST"
-            git diff --cached --quiet || git commit -m "📋 Update manifest: $ENTRY"
-            git push || true
-          fi
 
       - name: Set labels
         if: steps.check.outputs.skip == 'false'
@@ -280,22 +245,19 @@ jobs:
           JSON=$(find output_src \( -name "*.json" -o -name "*.mcmeta" \) | wc -l)
           PNG=$(find output_src -name "*.png" | wc -l)
           OGG=$(find output_src -name "*.ogg" | wc -l)
-          GLSL=$(find output_src \( -name "*.fsh" -o -name "*.vsh" -o -name "*.glsl" \) | wc -l)
-          PROPS=$(find output_src -name "*.properties" | wc -l)
-          OTHER=$((TOTAL - JAVA - JSON - PNG - OGG - GLSL - PROPS))
+          OTHER=$((TOTAL - JAVA - JSON - PNG - OGG))
 
           {
             echo "LANG_STATS<<EOF"
             echo "| Type | Files | % |"
             echo "|------|-------|---|"
-            for PAIR in "Java:$JAVA" "JSON:$JSON" "PNG:$PNG" "OGG:$OGG" "GLSL:$GLSL" "Properties:$PROPS" "Other:$OTHER"; do
+            for PAIR in "Java:$JAVA" "JSON:$JSON" "PNG:$PNG" "OGG:$OGG" "Other:$OTHER"; do
               NAME="${PAIR%%:*}"; NUM="${PAIR##*:}"
               if [ "$NUM" -gt 0 ] && [ "$TOTAL" -gt 0 ]; then
                 PCT=$(awk "BEGIN {printf \"%.1f\", ($NUM/$TOTAL)*100}")
                 echo "| $NAME | $NUM | $PCT% |"
               fi
             done
-            echo ""
             echo "**Total:** $TOTAL files"
             echo "EOF"
           } >> "$GITHUB_ENV"
@@ -364,7 +326,7 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Validate inputs
+      - name: Validate
         run: |
           if [ -z "${{ inputs.single_version }}" ]; then
             echo "❌ No version name provided"
@@ -387,12 +349,9 @@ jobs:
         run: |
           if [ ! -f "${{ env.JAR_FILE }}" ]; then
             echo "❌ JAR not found: ${{ env.JAR_FILE }}"
-            echo ""
-            echo "Available JARs:"
-            find jars/ -name "*.jar" 2>/dev/null || echo "  None found"
+            find jars/ -name "*.jar" 2>/dev/null || echo "  None"
             exit 1
           fi
-          echo "✅ Found: ${{ env.JAR_FILE }}"
 
       - name: Check if release exists
         id: check
@@ -401,7 +360,7 @@ jobs:
         run: |
           TAG="${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
           if gh release view "$TAG" > /dev/null 2>&1; then
-            echo "⏭️ Release $TAG already exists"
+            echo "⏭️ Release exists"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -426,24 +385,6 @@ jobs:
             echo "CHANGELOG=" >> "$GITHUB_ENV"
           fi
 
-      - name: Update manifest
-        if: steps.check.outputs.skip == 'false'
-        run: |
-          MANIFEST="manifest.json"
-          ENTRY="${{ env.JAR_TYPE }}/${{ env.JAR_NAME }}"
-
-          if jq -e --arg e "$ENTRY" '.processed | index($e)' "$MANIFEST" > /dev/null 2>&1; then
-            echo "Already in manifest"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-            jq --arg e "$ENTRY" '.processed += [$e]' "$MANIFEST" > tmp.json && mv tmp.json "$MANIFEST"
-            git add "$MANIFEST"
-            git diff --cached --quiet || git commit -m "📋 Update manifest: $ENTRY"
-            git push || true
-          fi
-
       - name: Download Vineflower
         if: steps.check.outputs.skip == 'false'
         run: wget -O vineflower.jar "https://repo1.maven.org/maven2/org/vineflower/vineflower/1.12.0/vineflower-1.12.0.jar"
@@ -462,22 +403,19 @@ jobs:
           JSON=$(find output_src \( -name "*.json" -o -name "*.mcmeta" \) | wc -l)
           PNG=$(find output_src -name "*.png" | wc -l)
           OGG=$(find output_src -name "*.ogg" | wc -l)
-          GLSL=$(find output_src \( -name "*.fsh" -o -name "*.vsh" -o -name "*.glsl" \) | wc -l)
-          PROPS=$(find output_src -name "*.properties" | wc -l)
-          OTHER=$((TOTAL - JAVA - JSON - PNG - OGG - GLSL - PROPS))
+          OTHER=$((TOTAL - JAVA - JSON - PNG - OGG))
 
           {
             echo "LANG_STATS<<EOF"
             echo "| Type | Files | % |"
             echo "|------|-------|---|"
-            for PAIR in "Java:$JAVA" "JSON:$JSON" "PNG:$PNG" "OGG:$OGG" "GLSL:$GLSL" "Properties:$PROPS" "Other:$OTHER"; do
+            for PAIR in "Java:$JAVA" "JSON:$JSON" "PNG:$PNG" "OGG:$OGG" "Other:$OTHER"; do
               NAME="${PAIR%%:*}"; NUM="${PAIR##*:}"
               if [ "$NUM" -gt 0 ] && [ "$TOTAL" -gt 0 ]; then
                 PCT=$(awk "BEGIN {printf \"%.1f\", ($NUM/$TOTAL)*100}")
                 echo "| $NAME | $NUM | $PCT% |"
               fi
             done
-            echo ""
             echo "**Total:** $TOTAL files"
             echo "EOF"
           } >> "$GITHUB_ENV"
@@ -521,15 +459,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 # ════════════════════════════════════════════════
-# BATCH: PARSE LINK FILE
+# BATCH: PARSE & SORT BY MOJANG ORDER
 # ════════════════════════════════════════════════
   batch-parse:
-    name: "📋 Parse Link File"
+    name: "📋 Parse & Sort (Oldest → Newest)"
     needs: setup
     if: ${{ inputs.mode == '📋 Batch Release (from link file)' }}
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.parse.outputs.matrix }}
+      entries: ${{ steps.parse.outputs.entries }}
       count: ${{ steps.parse.outputs.count }}
 
     steps:
@@ -541,21 +479,20 @@ jobs:
       - name: Pull latest
         run: git pull
 
-      - name: Parse link file
+      - name: Parse and sort by Mojang version order
         id: parse
         run: |
           FILE="links/${{ inputs.batch_file }}"
 
           if [ ! -f "$FILE" ]; then
             echo "❌ File not found: $FILE"
-            echo ""
-            echo "Available link files:"
-            ls links/*.md 2>/dev/null || echo "  None — run Fetch Version Links first"
+            ls links/*.md 2>/dev/null || echo "  None"
             exit 1
           fi
 
           echo "📄 Reading: $FILE"
 
+          # Determine section from filename
           case "${{ inputs.batch_file }}" in
             links_releases.md)  SECTION="releases" ;;
             links_snapshots.md) SECTION="snapshots" ;;
@@ -567,23 +504,19 @@ jobs:
           JAR_TYPE="${{ inputs.batch_jar_type }}"
           LIMIT="${{ inputs.batch_limit }}"
 
+          # ── STEP 1: Parse link file into unsorted list ──
           VERSION=""
           CLIENT=""
           SERVER=""
-          ENTRIES="[]"
-          COUNT=0
+          > unsorted_entries.txt
 
           save_version() {
             if [ -n "$VERSION" ]; then
-              if [ "$LIMIT" -eq 0 ] || [ "$COUNT" -lt "$LIMIT" ]; then
-                if { [ "$JAR_TYPE" = "both" ] || [ "$JAR_TYPE" = "client" ]; } && [ -n "$CLIENT" ]; then
-                  ENTRIES=$(echo "$ENTRIES" | jq --arg v "$VERSION" --arg u "$CLIENT" --arg s "$SECTION" --arg t "client" '. += [{"version": $v, "url": $u, "section": $s, "type": $t}]')
-                  COUNT=$((COUNT + 1))
-                fi
-                if { [ "$JAR_TYPE" = "both" ] || [ "$JAR_TYPE" = "server" ]; } && [ -n "$SERVER" ]; then
-                  ENTRIES=$(echo "$ENTRIES" | jq --arg v "$VERSION" --arg u "$SERVER" --arg s "$SECTION" --arg t "server" '. += [{"version": $v, "url": $u, "section": $s, "type": $t}]')
-                  COUNT=$((COUNT + 1))
-                fi
+              if { [ "$JAR_TYPE" = "both" ] || [ "$JAR_TYPE" = "client" ]; } && [ -n "$CLIENT" ]; then
+                echo "${VERSION}|${CLIENT}|${SECTION}|client" >> unsorted_entries.txt
+              fi
+              if { [ "$JAR_TYPE" = "both" ] || [ "$JAR_TYPE" = "server" ]; } && [ -n "$SERVER" ]; then
+                echo "${VERSION}|${SERVER}|${SECTION}|server" >> unsorted_entries.txt
               fi
             fi
           }
@@ -605,36 +538,97 @@ jobs:
               continue
             fi
           done < "$FILE"
-
           save_version
 
-          TOTAL=$(echo "$ENTRIES" | jq 'length')
-          echo "📋 Found $TOTAL entries to process"
-          echo "$ENTRIES" | jq .
+          TOTAL_UNSORTED=$(wc -l < unsorted_entries.txt)
+          echo "📋 Found $TOTAL_UNSORTED entries (unsorted)"
 
-          if [ "$TOTAL" -eq 0 ]; then
-            echo "⚠️ No entries found — nothing to process"
-            echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+          if [ "$TOTAL_UNSORTED" -eq 0 ]; then
+            echo "⚠️ No entries found"
+            echo "entries=[]" >> "$GITHUB_OUTPUT"
             echo "count=0" >> "$GITHUB_OUTPUT"
-          else
-            echo "matrix=$(echo "$ENTRIES" | jq -c '{"include": .}')" >> "$GITHUB_OUTPUT"
-            echo "count=$TOTAL" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
+          # ── STEP 2: Get Mojang version order ──
+          echo "📥 Fetching Mojang manifest..."
+          curl -s "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json" > mojang_manifest.json
+
+          # Mojang is newest first — reverse to get oldest first
+          jq -r '.versions | reverse | .[].id' mojang_manifest.json > mojang_order.txt
+
+          # ── STEP 3: Sort entries by Mojang order (oldest first) ──
+          > sorted_entries.txt
+          COUNT=0
+
+          while IFS= read -r mc_version; do
+            while IFS='|' read -r ver url sec typ; do
+              if [ "$ver" = "$mc_version" ]; then
+                if [ "$LIMIT" -eq 0 ] || [ "$COUNT" -lt "$LIMIT" ]; then
+                  echo "${ver}|${url}|${sec}|${typ}" >> sorted_entries.txt
+                  COUNT=$((COUNT + 1))
+                fi
+              fi
+            done < unsorted_entries.txt
+          done < mojang_order.txt
+
+          # Add any versions not in Mojang manifest at the end
+          while IFS='|' read -r ver url sec typ; do
+            if ! grep -q "^${ver}|" sorted_entries.txt 2>/dev/null; then
+              if [ "$LIMIT" -eq 0 ] || [ "$COUNT" -lt "$LIMIT" ]; then
+                echo "${ver}|${url}|${sec}|${typ}" >> sorted_entries.txt
+                COUNT=$((COUNT + 1))
+              fi
+            fi
+          done < unsorted_entries.txt
+
+          TOTAL_SORTED=$(wc -l < sorted_entries.txt)
+
+          echo ""
+          echo "═══════════════════════════════════════════"
+          echo "📋 PROCESSING ORDER (oldest → newest)"
+          echo "═══════════════════════════════════════════"
+          echo ""
+
+          IDX=0
+          while IFS='|' read -r ver url sec typ; do
+            IDX=$((IDX + 1))
+            echo "  $IDX. $ver ($typ)"
+          done < sorted_entries.txt
+
+          echo ""
+          echo "Total: $TOTAL_SORTED entries"
+          echo ""
+          echo "⚡ Will process oldest first → newest last"
+          echo "📌 Newest will appear on top in GitHub Releases"
+
+          # ── STEP 4: Convert to JSON array ──
+          ENTRIES="[]"
+          IDX=0
+          while IFS='|' read -r ver url sec typ; do
+            IDX=$((IDX + 1))
+            ENTRIES=$(echo "$ENTRIES" | jq \
+              --arg v "$ver" \
+              --arg u "$url" \
+              --arg s "$sec" \
+              --arg t "$typ" \
+              --argjson i "$IDX" \
+              '. += [{"version": $v, "url": $u, "section": $s, "type": $t, "index": $i}]')
+          done < sorted_entries.txt
+
+          echo "entries=$(echo "$ENTRIES" | jq -c .)" >> "$GITHUB_OUTPUT"
+          echo "count=$TOTAL_SORTED" >> "$GITHUB_OUTPUT"
+
 # ════════════════════════════════════════════════
-# BATCH: PROCESS EACH VERSION
+# BATCH: PROCESS ONE BY ONE IN ORDER
 # ════════════════════════════════════════════════
   batch-process:
-    name: "⚙️ ${{ matrix.version }} (${{ matrix.type }})"
+    name: "⚙️ Process All Versions"
     needs: batch-parse
     if: ${{ needs.batch-parse.outputs.count != '0' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix: ${{ fromJson(needs.batch-parse.outputs.matrix) }}
 
     steps:
       - name: Checkout
@@ -651,157 +645,154 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Setup variables
-        run: |
-          mkdir -p jars/${{ matrix.section }}
-
-          VERSION="${{ matrix.version }}"
-          TYPE="${{ matrix.type }}"
-          SECTION="${{ matrix.section }}"
-
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "CONTENT_TYPE=$TYPE" >> "$GITHUB_ENV"
-          echo "JAR_TYPE=$SECTION" >> "$GITHUB_ENV"
-          echo "JAR_NAME=${VERSION}-${TYPE}" >> "$GITHUB_ENV"
-          echo "FILENAME=${VERSION}-${TYPE}.jar" >> "$GITHUB_ENV"
-          echo "JAR_FILE=jars/${SECTION}/${VERSION}-${TYPE}.jar" >> "$GITHUB_ENV"
-
-      - name: Check if release exists
-        id: check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            echo "⏭️ Skipping $TAG — already exists"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Download JAR
-        if: steps.check.outputs.skip == 'false'
-        run: |
-          wget -O "${{ env.JAR_FILE }}" "${{ matrix.url }}"
-
-          SIZE=$(stat -c%s "${{ env.JAR_FILE }}")
-          echo "✅ Downloaded: ${{ env.JAR_FILE }} ($SIZE bytes)"
-
-          if [ "$SIZE" -lt 1000 ]; then
-            echo "❌ File too small"
-            exit 1
-          fi
-
-      - name: Commit JAR
-        if: steps.check.outputs.skip == 'false'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --rebase || true
-          git add "${{ env.JAR_FILE }}"
-          git diff --cached --quiet || git commit -m "Add ${{ env.FILENAME }}"
-          git push || true
-
-      - name: Update manifest
-        if: steps.check.outputs.skip == 'false'
-        run: |
-          git pull --rebase || true
-
-          MANIFEST="manifest.json"
-          ENTRY="${{ env.JAR_TYPE }}/${{ env.JAR_NAME }}"
-
-          if [ -f "$MANIFEST" ]; then
-            if ! jq -e --arg e "$ENTRY" '.processed | index($e)' "$MANIFEST" > /dev/null 2>&1; then
-              jq --arg e "$ENTRY" '.processed += [$e]' "$MANIFEST" > tmp.json && mv tmp.json "$MANIFEST"
-              git add "$MANIFEST"
-              git diff --cached --quiet || git commit -m "📋 Update manifest: $ENTRY"
-              git push || true
-            fi
-          fi
-
       - name: Download Vineflower
-        if: steps.check.outputs.skip == 'false'
         run: wget -O vineflower.jar "https://repo1.maven.org/maven2/org/vineflower/vineflower/1.12.0/vineflower-1.12.0.jar"
 
-      - name: Decompile
-        if: steps.check.outputs.skip == 'false'
+      - name: Process all versions in order
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ENTRIES: ${{ needs.batch-parse.outputs.entries }}
         run: |
-          mkdir -p output_src
-          java -jar vineflower.jar -j=2 -e=1 -dgs=1 -asc=1 -ind="    " "${{ env.JAR_FILE }}" output_src/
+          echo "$ENTRIES" > entries.json
 
-      - name: Analyze files
-        if: steps.check.outputs.skip == 'false'
-        run: |
-          TOTAL=$(find output_src -type f | wc -l)
-          JAVA=$(find output_src -name "*.java" | wc -l)
-          JSON=$(find output_src \( -name "*.json" -o -name "*.mcmeta" \) | wc -l)
-          PNG=$(find output_src -name "*.png" | wc -l)
-          OGG=$(find output_src -name "*.ogg" | wc -l)
-          GLSL=$(find output_src \( -name "*.fsh" -o -name "*.vsh" -o -name "*.glsl" \) | wc -l)
-          PROPS=$(find output_src -name "*.properties" | wc -l)
-          OTHER=$((TOTAL - JAVA - JSON - PNG - OGG - GLSL - PROPS))
+          TOTAL=$(jq 'length' entries.json)
 
-          {
-            echo "LANG_STATS<<EOF"
-            echo "| Type | Files | % |"
-            echo "|------|-------|---|"
-            for PAIR in "Java:$JAVA" "JSON:$JSON" "PNG:$PNG" "OGG:$OGG" "GLSL:$GLSL" "Properties:$PROPS" "Other:$OTHER"; do
+          echo ""
+          echo "═══════════════════════════════════════════"
+          echo "⚙️ PROCESSING $TOTAL VERSIONS (oldest → newest)"
+          echo "═══════════════════════════════════════════"
+          echo ""
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          for (( i=0; i<$TOTAL; i++ )); do
+            ENTRY=$(jq ".[$i]" entries.json)
+
+            VERSION=$(echo "$ENTRY" | jq -r '.version')
+            URL=$(echo "$ENTRY" | jq -r '.url')
+            SECTION=$(echo "$ENTRY" | jq -r '.section')
+            TYPE=$(echo "$ENTRY" | jq -r '.type')
+            INDEX=$(echo "$ENTRY" | jq -r '.index')
+
+            JAR_NAME="${VERSION}-${TYPE}"
+            FILENAME="${VERSION}-${TYPE}.jar"
+            JAR_FILE="jars/${SECTION}/${FILENAME}"
+            TAG="${SECTION}-${JAR_NAME}"
+
+            echo ""
+            echo "────────────────────────────────────────"
+            echo "[$INDEX/$TOTAL] $VERSION ($TYPE)"
+            echo "────────────────────────────────────────"
+
+            # Check if release exists
+            if gh release view "$TAG" > /dev/null 2>&1; then
+              echo "  ⏭️ Skipping — release exists"
+              continue
+            fi
+
+            # Download JAR
+            echo "  📥 Downloading..."
+            mkdir -p "jars/${SECTION}"
+            wget -q -O "$JAR_FILE" "$URL"
+
+            SIZE=$(stat -c%s "$JAR_FILE")
+            echo "  ✅ Downloaded: $SIZE bytes"
+
+            if [ "$SIZE" -lt 1000 ]; then
+              echo "  ❌ File too small, skipping"
+              rm -f "$JAR_FILE"
+              continue
+            fi
+
+            # Commit JAR
+            echo "  💾 Committing JAR..."
+            git pull --rebase || true
+            git add "$JAR_FILE"
+            git diff --cached --quiet || git commit -m "Add $FILENAME"
+            git push || true
+
+            # Decompile
+            echo "  🔧 Decompiling..."
+            rm -rf output_src
+            mkdir -p output_src
+            java -jar vineflower.jar -j=2 -e=1 -dgs=1 -asc=1 -ind="    " "$JAR_FILE" output_src/ 2>/dev/null || true
+
+            # Analyze
+            TOTAL_FILES=$(find output_src -type f | wc -l)
+            JAVA_FILES=$(find output_src -name "*.java" | wc -l)
+            JSON_FILES=$(find output_src \( -name "*.json" -o -name "*.mcmeta" \) | wc -l)
+            PNG_FILES=$(find output_src -name "*.png" | wc -l)
+            OGG_FILES=$(find output_src -name "*.ogg" | wc -l)
+            OTHER_FILES=$((TOTAL_FILES - JAVA_FILES - JSON_FILES - PNG_FILES - OGG_FILES))
+
+            STATS="| Type | Files | % |
+          |------|-------|---|"
+            for PAIR in "Java:$JAVA_FILES" "JSON:$JSON_FILES" "PNG:$PNG_FILES" "OGG:$OGG_FILES" "Other:$OTHER_FILES"; do
               NAME="${PAIR%%:*}"; NUM="${PAIR##*:}"
-              if [ "$NUM" -gt 0 ] && [ "$TOTAL" -gt 0 ]; then
-                PCT=$(awk "BEGIN {printf \"%.1f\", ($NUM/$TOTAL)*100}")
-                echo "| $NAME | $NUM | $PCT% |"
+              if [ "$NUM" -gt 0 ] && [ "$TOTAL_FILES" -gt 0 ]; then
+                PCT=$(awk "BEGIN {printf \"%.1f\", ($NUM/$TOTAL_FILES)*100}")
+                STATS="$STATS
+          | $NAME | $NUM | $PCT% |"
               fi
             done
-            echo ""
-            echo "**Total:** $TOTAL files"
-            echo "EOF"
-          } >> "$GITHUB_ENV"
+            STATS="$STATS
 
-      - name: Package
-        if: steps.check.outputs.skip == 'false'
-        run: |
-          cd output_src && zip -r "../${{ env.JAR_NAME }}-source.zip" . && cd ..
-          cp "${{ env.JAR_FILE }}" "${{ env.JAR_NAME }}.jar"
+          **Total:** $TOTAL_FILES files"
 
-      - name: Set Release Label
-        if: steps.check.outputs.skip == 'false'
-        run: |
-          case "${{ env.JAR_TYPE }}" in
-            alpha)     LABEL="Alpha" ;;
-            beta)      LABEL="Beta" ;;
-            snapshots) LABEL="Snapshot" ;;
-            releases)  LABEL="Release" ;;
-            *)         LABEL="Minecraft" ;;
-          esac
-          echo "RELEASE_LABEL=$LABEL" >> "$GITHUB_ENV"
+            # Set label
+            case "$SECTION" in
+              alpha)     LABEL="Alpha" ;;
+              beta)      LABEL="Beta" ;;
+              snapshots) LABEL="Snapshot" ;;
+              releases)  LABEL="Release" ;;
+              *)         LABEL="Minecraft" ;;
+            esac
 
-      - name: Create Release
-        if: steps.check.outputs.skip == 'false'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: "${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
-          name: "[${{ env.RELEASE_LABEL }}] ${{ env.VERSION }} (${{ env.CONTENT_TYPE }})"
-          body: |
-            ## Minecraft `${{ env.VERSION }}` — ${{ env.CONTENT_TYPE }} (${{ env.RELEASE_LABEL }})
+            # Package
+            echo "  📦 Packaging..."
+            cd output_src && zip -qr "../${JAR_NAME}-source.zip" . && cd ..
+            cp "$JAR_FILE" "${JAR_NAME}.jar"
 
-            ### 📥 Downloads
-            | File | Description |
-            |------|-------------|
-            | `${{ env.JAR_NAME }}-source.zip` | Decompiled Java source |
-            | `${{ env.JAR_NAME }}.jar` | Original ${{ env.CONTENT_TYPE }} JAR |
+            # Create release
+            echo "  🚀 Creating release..."
 
-            ### 📊 File Breakdown
-            ${{ env.LANG_STATS }}
+            BODY="## Minecraft \`$VERSION\` — $TYPE ($LABEL)
 
-            ### ℹ️ Info
-            - **Version:** ${{ env.VERSION }}
-            - **Type:** ${{ env.CONTENT_TYPE }}
-            - **Classification:** ${{ env.RELEASE_LABEL }}
-            - **Decompiler:** Vineflower 1.12.0
-          files: |
-            ${{ env.JAR_NAME }}-source.zip
-            ${{ env.JAR_NAME }}.jar
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ### 📥 Downloads
+          | File | Description |
+          |------|-------------|
+          | \`${JAR_NAME}-source.zip\` | Decompiled Java source |
+          | \`${JAR_NAME}.jar\` | Original $TYPE JAR |
+
+          ### 📊 File Breakdown
+          $STATS
+
+          ### ℹ️ Info
+          - **Version:** $VERSION
+          - **Type:** $TYPE
+          - **Classification:** $LABEL
+          - **Decompiler:** Vineflower 1.12.0"
+
+            gh release create "$TAG" \
+              --title "[$LABEL] $VERSION ($TYPE)" \
+              --notes "$BODY" \
+              "${JAR_NAME}-source.zip" \
+              "${JAR_NAME}.jar"
+
+            echo "  ✅ Released!"
+
+            # Cleanup
+            rm -rf output_src "${JAR_NAME}-source.zip" "${JAR_NAME}.jar"
+
+            # Small delay to ensure proper ordering
+            sleep 2
+
+          done
+
+          echo ""
+          echo "═══════════════════════════════════════════"
+          echo "✅ DONE! All versions processed"
+          echo ""
+          echo "📌 Releases are now ordered: newest on top"
+          echo "═══════════════════════════════════════════"
