@@ -65,7 +65,12 @@ on:
           - client
           - server
       batch_limit:
-        description: '🔢 [Batch] Max Versions (0 = all)'
+        description: '🔢 [Batch] Max Versions per run (0 = all, recommended: 50)'
+        required: false
+        type: number
+        default: 50
+      batch_offset:
+        description: '⏭️ [Batch] Skip first N versions (resume from where you left off)'
         required: false
         type: number
         default: 0
@@ -163,6 +168,7 @@ jobs:
         run: |
           TAG="${{ env.JAR_TYPE }}-${{ env.JAR_NAME }}"
           if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "⏭️ Already exists"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -199,7 +205,7 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         run: wget -q -O vineflower.jar "https://repo1.maven.org/maven2/org/vineflower/vineflower/1.12.0/vineflower-1.12.0.jar"
 
-      - name: Decompile (Fast Mode)
+      - name: Decompile (Fast)
         if: steps.check.outputs.skip == 'false'
         run: |
           mkdir -p output_src temp_classes
@@ -208,15 +214,13 @@ jobs:
           unzip -q -o "${{ env.JAR_FILE }}" -x "*.class" -d output_src/ 2>/dev/null || true
           rm -rf temp_classes
 
-      - name: Analyze & Package
+      - name: Package & Stats
         if: steps.check.outputs.skip == 'false'
         run: |
           TOTAL=$(find output_src -type f | wc -l)
           JAVA=$(find output_src -name "*.java" | wc -l)
-          
           cd output_src && zip -qr "../${{ env.JAR_NAME }}-source.zip" . && cd ..
           cp "${{ env.JAR_FILE }}" "${{ env.JAR_NAME }}.jar"
-          
           echo "TOTAL_FILES=$TOTAL" >> "$GITHUB_ENV"
           echo "JAVA_FILES=$JAVA" >> "$GITHUB_ENV"
 
@@ -228,13 +232,11 @@ jobs:
           name: "[${{ env.RELEASE_LABEL }}] ${{ env.VERSION }} (${{ env.CONTENT_TYPE }})"
           body: |
             ## Minecraft `${{ env.VERSION }}` — ${{ env.CONTENT_TYPE }} (${{ env.RELEASE_LABEL }})
-            
             ### 📥 Downloads
             | File | Description |
             |------|-------------|
             | `${{ env.JAR_NAME }}-source.zip` | Decompiled source |
             | `${{ env.JAR_NAME }}.jar` | Original JAR |
-            
             ### 📊 Stats
             - **Java Files:** ${{ env.JAVA_FILES }}
             - **Total Files:** ${{ env.TOTAL_FILES }}
@@ -263,32 +265,26 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
-
       - name: Pull latest
         run: git pull
-
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
-
       - name: Setup variables
         run: |
           VERSION=$(echo "${{ inputs.single_version }}" | sed 's/\.jar$//')
           TYPE="${{ inputs.single_jar_type }}"
           FOLDER="${{ inputs.single_folder }}"
-
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "CONTENT_TYPE=$TYPE" >> "$GITHUB_ENV"
           echo "JAR_TYPE=$FOLDER" >> "$GITHUB_ENV"
           echo "JAR_NAME=${VERSION}-${TYPE}" >> "$GITHUB_ENV"
           echo "JAR_FILE=jars/${FOLDER}/${VERSION}-${TYPE}.jar" >> "$GITHUB_ENV"
-
       - name: Validate JAR
         run: |
           [ ! -f "${{ env.JAR_FILE }}" ] && echo "❌ Not found" && exit 1
-
       - name: Check if release exists
         id: check
         env:
@@ -300,7 +296,6 @@ jobs:
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
-
       - name: Set labels
         if: steps.check.outputs.skip == 'false'
         run: |
@@ -310,12 +305,10 @@ jobs:
             *) LABEL="Minecraft" ;;
           esac
           echo "RELEASE_LABEL=$LABEL" >> "$GITHUB_ENV"
-
       - name: Download Vineflower
         if: steps.check.outputs.skip == 'false'
         run: wget -q -O vineflower.jar "https://repo1.maven.org/maven2/org/vineflower/vineflower/1.12.0/vineflower-1.12.0.jar"
-
-      - name: Decompile (Fast Mode)
+      - name: Decompile (Fast)
         if: steps.check.outputs.skip == 'false'
         run: |
           mkdir -p output_src temp_classes
@@ -323,19 +316,15 @@ jobs:
           java -jar vineflower.jar -j=4 -e=1 -dgs=1 -asc=1 -ind="    " temp_classes/ output_src/ 2>/dev/null || true
           unzip -q -o "${{ env.JAR_FILE }}" -x "*.class" -d output_src/ 2>/dev/null || true
           rm -rf temp_classes
-
-      - name: Analyze & Package
+      - name: Package & Stats
         if: steps.check.outputs.skip == 'false'
         run: |
           TOTAL=$(find output_src -type f | wc -l)
           JAVA=$(find output_src -name "*.java" | wc -l)
-          
           cd output_src && zip -qr "../${{ env.JAR_NAME }}-source.zip" . && cd ..
           cp "${{ env.JAR_FILE }}" "${{ env.JAR_NAME }}.jar"
-          
           echo "TOTAL_FILES=$TOTAL" >> "$GITHUB_ENV"
           echo "JAVA_FILES=$JAVA" >> "$GITHUB_ENV"
-
       - name: Create Release
         if: steps.check.outputs.skip == 'false'
         uses: softprops/action-gh-release@v2
@@ -344,13 +333,11 @@ jobs:
           name: "[${{ env.RELEASE_LABEL }}] ${{ env.VERSION }} (${{ env.CONTENT_TYPE }})"
           body: |
             ## Minecraft `${{ env.VERSION }}` — ${{ env.CONTENT_TYPE }} (${{ env.RELEASE_LABEL }})
-            
             ### 📥 Downloads
             | File | Description |
             |------|-------------|
             | `${{ env.JAR_NAME }}-source.zip` | Decompiled source |
             | `${{ env.JAR_NAME }}.jar` | Original JAR |
-            
             ### 📊 Stats
             - **Java Files:** ${{ env.JAVA_FILES }}
             - **Total Files:** ${{ env.TOTAL_FILES }}
@@ -364,15 +351,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 # ════════════════════════════════════════════════
-# BATCH: PARSE & SORT
+# BATCH: PARSE, SORT & FILTER ALREADY DONE
 # ════════════════════════════════════════════════
   batch-parse:
-    name: "📋 Parse & Sort"
+    name: "📋 Parse, Sort & Filter"
     needs: setup
     if: ${{ inputs.mode == '📋 Batch Release (from link file)' }}
     runs-on: ubuntu-latest
     outputs:
       count: ${{ steps.parse.outputs.count }}
+      total_all: ${{ steps.parse.outputs.total_all }}
+      total_done: ${{ steps.parse.outputs.total_done }}
+      total_todo: ${{ steps.parse.outputs.total_todo }}
 
     steps:
       - name: Checkout
@@ -383,8 +373,10 @@ jobs:
       - name: Pull latest
         run: git pull
 
-      - name: Parse and sort
+      - name: Parse, sort, and filter
         id: parse
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           FILE="links/${{ inputs.batch_file }}"
 
@@ -403,8 +395,9 @@ jobs:
 
           JAR_TYPE="${{ inputs.batch_jar_type }}"
           LIMIT="${{ inputs.batch_limit }}"
+          OFFSET="${{ inputs.batch_offset }}"
 
-          # Parse link file
+          # ── Parse link file ──
           VERSION=""
           CLIENT=""
           SERVER=""
@@ -433,7 +426,6 @@ jobs:
             fi
           done < "$FILE"
 
-          # Save last version
           if [ -n "$VERSION" ]; then
             if { [ "$JAR_TYPE" = "both" ] || [ "$JAR_TYPE" = "client" ]; } && [ -n "$CLIENT" ]; then
               echo "${VERSION}|${CLIENT}|${SECTION}|client" >> unsorted.txt
@@ -443,39 +435,112 @@ jobs:
             fi
           fi
 
-          # Get Mojang order (oldest first)
+          TOTAL_ALL=$(wc -l < unsorted.txt)
+
+          # ── Sort by Mojang order (oldest first) ──
           curl -s "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json" > manifest.json
           jq -r '.versions | reverse | .[].id' manifest.json > mojang_order.txt
 
-          # Sort by Mojang order
-          > sorted.txt
-          COUNT=0
+          > sorted_all.txt
 
           while IFS= read -r mc_version; do
             while IFS='|' read -r ver url sec typ; do
               if [ "$ver" = "$mc_version" ]; then
-                if [ "$LIMIT" -eq 0 ] || [ "$COUNT" -lt "$LIMIT" ]; then
-                  echo "${ver}|${url}|${sec}|${typ}" >> sorted.txt
-                  COUNT=$((COUNT + 1))
-                fi
+                echo "${ver}|${url}|${sec}|${typ}" >> sorted_all.txt
               fi
             done < unsorted.txt
           done < mojang_order.txt
 
-          # Add versions not in Mojang manifest
           while IFS='|' read -r ver url sec typ; do
-            if ! grep -q "^${ver}|" sorted.txt 2>/dev/null; then
-              if [ "$LIMIT" -eq 0 ] || [ "$COUNT" -lt "$LIMIT" ]; then
-                echo "${ver}|${url}|${sec}|${typ}" >> sorted.txt
-                COUNT=$((COUNT + 1))
-              fi
+            if ! grep -q "^${ver}|.*|.*|${typ}$" sorted_all.txt 2>/dev/null; then
+              echo "${ver}|${url}|${sec}|${typ}" >> sorted_all.txt
             fi
           done < unsorted.txt
 
-          TOTAL=$(wc -l < sorted.txt)
-          echo "📋 Found $TOTAL entries (oldest → newest)"
+          # ── Get list of existing releases ──
+          echo "📋 Fetching existing releases..."
+          gh release list --limit 1000 --json tagName -q '.[].tagName' > existing_tags.txt
 
-          echo "count=$TOTAL" >> "$GITHUB_OUTPUT"
+          # ── Filter out already-done versions ──
+          > todo.txt
+          DONE_COUNT=0
+
+          while IFS='|' read -r ver url sec typ; do
+            TAG="${sec}-${ver}-${typ}"
+            if grep -q "^${TAG}$" existing_tags.txt 2>/dev/null; then
+              DONE_COUNT=$((DONE_COUNT + 1))
+            else
+              echo "${ver}|${url}|${sec}|${typ}" >> todo.txt
+            fi
+          done < sorted_all.txt
+
+          TOTAL_TODO=$(wc -l < todo.txt)
+
+          echo ""
+          echo "═══════════════════════════════════════════"
+          echo "📊 PROGRESS REPORT"
+          echo "═══════════════════════════════════════════"
+          echo ""
+          echo "  📋 Total versions in link file: $TOTAL_ALL"
+          echo "  ✅ Already released:            $DONE_COUNT"
+          echo "  📦 Remaining to process:        $TOTAL_TODO"
+          echo ""
+
+          if [ "$TOTAL_TODO" -eq 0 ]; then
+            echo "🎉 All versions are already released!"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "total_all=$TOTAL_ALL" >> "$GITHUB_OUTPUT"
+            echo "total_done=$DONE_COUNT" >> "$GITHUB_OUTPUT"
+            echo "total_todo=0" >> "$GITHUB_OUTPUT"
+            touch sorted.txt
+          else
+            # ── Apply offset and limit ──
+            > sorted.txt
+            SKIP=0
+            ADDED=0
+
+            while IFS='|' read -r ver url sec typ; do
+              if [ "$SKIP" -lt "$OFFSET" ]; then
+                SKIP=$((SKIP + 1))
+                continue
+              fi
+              if [ "$LIMIT" -gt 0 ] && [ "$ADDED" -ge "$LIMIT" ]; then
+                break
+              fi
+              echo "${ver}|${url}|${sec}|${typ}" >> sorted.txt
+              ADDED=$((ADDED + 1))
+            done < todo.txt
+
+            BATCH_COUNT=$(wc -l < sorted.txt)
+
+            echo "  ⏭️ Offset (skip first N):      $OFFSET"
+            echo "  🔢 Limit per run:              $LIMIT"
+            echo "  📦 This batch will process:    $BATCH_COUNT"
+            echo ""
+            echo "═══════════════════════════════════════════"
+            echo "📋 THIS BATCH (oldest → newest)"
+            echo "═══════════════════════════════════════════"
+            echo ""
+
+            IDX=0
+            while IFS='|' read -r ver url sec typ; do
+              IDX=$((IDX + 1))
+              echo "  $IDX. $ver ($typ)"
+            done < sorted.txt
+
+            REMAINING=$((TOTAL_TODO - OFFSET - BATCH_COUNT))
+            if [ "$REMAINING" -gt 0 ]; then
+              NEXT_OFFSET=$((OFFSET + BATCH_COUNT))
+              echo ""
+              echo "💡 After this run, use offset=$NEXT_OFFSET to continue"
+            fi
+
+            echo ""
+            echo "count=$BATCH_COUNT" >> "$GITHUB_OUTPUT"
+            echo "total_all=$TOTAL_ALL" >> "$GITHUB_OUTPUT"
+            echo "total_done=$DONE_COUNT" >> "$GITHUB_OUTPUT"
+            echo "total_todo=$TOTAL_TODO" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Upload sorted list
         uses: actions/upload-artifact@v4
@@ -485,7 +550,7 @@ jobs:
           retention-days: 1
 
 # ════════════════════════════════════════════════
-# BATCH: PROCESS ALL VERSIONS
+# BATCH: PROCESS VERSIONS
 # ════════════════════════════════════════════════
   batch-process:
     name: "⚙️ Process Versions"
@@ -518,16 +583,22 @@ jobs:
       - name: Download Vineflower
         run: wget -q -O vineflower.jar "https://repo1.maven.org/maven2/org/vineflower/vineflower/1.12.0/vineflower-1.12.0.jar"
 
-      - name: Process all versions in order
+      - name: Process versions in order
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TOTAL=$(wc -l < sorted.txt)
           COUNT=0
+          SKIPPED=0
+          PROCESSED=0
+          FAILED=0
+          START_TIME=$(date +%s)
+          MAX_SECONDS=19800  # 5.5 hours — leave buffer for cleanup
 
           echo ""
           echo "═══════════════════════════════════════════"
-          echo "⚙️ PROCESSING $TOTAL VERSIONS (oldest → newest)"
+          echo "⚙️ PROCESSING $TOTAL VERSIONS"
+          echo "⏱️ Time limit: ~5.5 hours"
           echo "═══════════════════════════════════════════"
           echo ""
 
@@ -536,6 +607,15 @@ jobs:
 
           while IFS='|' read -r VERSION URL SECTION TYPE; do
             COUNT=$((COUNT + 1))
+
+            # ── Time check ──
+            ELAPSED=$(( $(date +%s) - START_TIME ))
+            if [ "$ELAPSED" -ge "$MAX_SECONDS" ]; then
+              echo ""
+              echo "⏱️ TIME LIMIT REACHED after $COUNT entries"
+              echo "💡 Run again — it will auto-skip completed versions"
+              break
+            fi
 
             JAR_NAME="${VERSION}-${TYPE}"
             FILENAME="${VERSION}-${TYPE}.jar"
@@ -547,54 +627,64 @@ jobs:
             echo "[$COUNT/$TOTAL] $VERSION ($TYPE)"
             echo "────────────────────────────────────────"
 
-            # Check if release exists
+            # ── Double-check release doesn't exist ──
             if gh release view "$TAG" > /dev/null 2>&1; then
-              echo "  ⏭️ Skipping — release exists"
+              echo "  ⏭️ Skipping — already released"
+              SKIPPED=$((SKIPPED + 1))
               continue
             fi
 
-            # Download JAR
+            # ── Download JAR ──
             echo "  📥 Downloading..."
             mkdir -p "jars/${SECTION}"
-            wget -q -O "$JAR_FILE" "$URL" || { echo "  ❌ Download failed"; continue; }
+            if ! wget -q -O "$JAR_FILE" "$URL" 2>/dev/null; then
+              echo "  ❌ Download failed"
+              FAILED=$((FAILED + 1))
+              rm -f "$JAR_FILE"
+              continue
+            fi
 
-            SIZE=$(stat -c%s "$JAR_FILE")
-            [ "$SIZE" -lt 1000 ] && { echo "  ❌ Too small"; rm -f "$JAR_FILE"; continue; }
+            SIZE=$(stat -c%s "$JAR_FILE" 2>/dev/null || echo 0)
+            if [ "$SIZE" -lt 1000 ]; then
+              echo "  ❌ Too small ($SIZE bytes)"
+              FAILED=$((FAILED + 1))
+              rm -f "$JAR_FILE"
+              continue
+            fi
 
-            # Commit JAR
+            # ── Commit JAR ──
             echo "  💾 Committing..."
             git pull --rebase || true
             git add "$JAR_FILE"
             git diff --cached --quiet || git commit -m "Add $FILENAME"
             git push || true
 
-            # Decompile (Fast Mode)
+            # ── Decompile (Fast) ──
             echo "  🔧 Decompiling..."
             rm -rf output_src temp_classes
             mkdir -p output_src temp_classes
 
             unzip -q "$JAR_FILE" -d temp_classes 2>/dev/null || true
-            java -jar vineflower.jar -j=4 -e=1 -dgs=1 -asc=1 -ind="    " temp_classes/ output_src/ 2>/dev/null || true
+            timeout 600 java -jar vineflower.jar -j=4 -e=1 -dgs=1 -asc=1 -ind="    " temp_classes/ output_src/ 2>/dev/null || true
             unzip -q -o "$JAR_FILE" -x "*.class" -d output_src/ 2>/dev/null || true
             rm -rf temp_classes
 
-            # Stats
+            # ── Stats ──
             TOTAL_FILES=$(find output_src -type f | wc -l)
             JAVA_FILES=$(find output_src -name "*.java" | wc -l)
 
-            # Set label
             case "$SECTION" in
               alpha) LABEL="Alpha" ;; beta) LABEL="Beta" ;;
               snapshots) LABEL="Snapshot" ;; releases) LABEL="Release" ;;
               *) LABEL="Minecraft" ;;
             esac
 
-            # Package
+            # ── Package ──
             echo "  📦 Packaging..."
             cd output_src && zip -qr "../${JAR_NAME}-source.zip" . && cd ..
             cp "$JAR_FILE" "${JAR_NAME}.jar"
 
-            # Create release
+            # ── Release ──
             echo "  🚀 Releasing..."
 
             BODY="## Minecraft \`$VERSION\` — $TYPE ($LABEL)
@@ -610,23 +700,39 @@ jobs:
           - **Total Files:** $TOTAL_FILES
           - **Decompiler:** Vineflower 1.12.0"
 
-            gh release create "$TAG" \
+            if gh release create "$TAG" \
               --title "[$LABEL] $VERSION ($TYPE)" \
               --notes "$BODY" \
               "${JAR_NAME}-source.zip" \
-              "${JAR_NAME}.jar"
+              "${JAR_NAME}.jar" 2>/dev/null; then
+              echo "  ✅ Released!"
+              PROCESSED=$((PROCESSED + 1))
+            else
+              echo "  ❌ Release creation failed"
+              FAILED=$((FAILED + 1))
+            fi
 
-            echo "  ✅ Done!"
-
-            # Cleanup
+            # ── Cleanup ──
             rm -rf output_src "${JAR_NAME}-source.zip" "${JAR_NAME}.jar"
 
-            # Small delay for ordering
             sleep 1
 
           done < sorted.txt
 
+          ELAPSED=$(( $(date +%s) - START_TIME ))
+          MINUTES=$((ELAPSED / 60))
+
           echo ""
           echo "═══════════════════════════════════════════"
-          echo "✅ DONE! $COUNT versions processed"
+          echo "📊 BATCH COMPLETE"
+          echo "═══════════════════════════════════════════"
+          echo ""
+          echo "  ⏱️ Time elapsed: ${MINUTES} minutes"
+          echo "  ✅ Processed:    $PROCESSED"
+          echo "  ⏭️ Skipped:      $SKIPPED"
+          echo "  ❌ Failed:       $FAILED"
+          echo "  📋 Total:        $COUNT / $TOTAL"
+          echo ""
+          echo "💡 Run this workflow again to continue"
+          echo "   It will auto-skip already released versions"
           echo "═══════════════════════════════════════════"
